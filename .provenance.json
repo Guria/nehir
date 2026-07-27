@@ -117,7 +117,8 @@
         "Tests/NehirTests/SwipeAfterFullscreenExitWorkspaceTests.swift",
         "Tests/NehirTests/DockAutohideReservationTests.swift",
         "Tests/NehirTests/ColumnWidthCycleViewportAnchorTests.swift",
-        "Tests/NehirTests/QuantizationRefusalStreakTests.swift"
+        "Tests/NehirTests/QuantizationRefusalStreakTests.swift",
+        "Tests/NehirTests/QuickTerminalCloseAnchorTests.swift"
       ],
       "copyright": [
         "2026 Aleksei Gurianov and Nehir contributors"
