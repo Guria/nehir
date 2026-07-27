@@ -140,6 +140,11 @@ struct WorkspaceLayoutPlan {
     var sessionPatch: WorkspaceSessionPatch
     var diff: WorkspaceLayoutDiff
     var animationDirectives: [AnimationDirective] = []
+    /// True for plans emitted by the scroll-animation display-link driver. While a
+    /// scroll animation is registered for a workspace, that driver is the sole
+    /// authority for window frames: a scheduled relayout plan may have been built
+    /// before the animation started and would push stale pre-animation frames.
+    var fromScrollAnimationDriver: Bool = false
 }
 
 typealias RefreshPostLayoutAction = @MainActor () -> Void
