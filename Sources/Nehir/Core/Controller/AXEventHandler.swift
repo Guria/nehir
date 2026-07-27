@@ -965,6 +965,11 @@ final class AXEventHandler: CGSEventDelegate {
     private var recentManagedAdmissionByToken: [WindowToken: RecentManagedAdmission] = [:]
     private var pendingManagedReplacementBursts: [ManagedReplacementKey: PendingManagedReplacementBurst] = [:]
     private var pendingManagedReplacementTasks: [ManagedReplacementKey: Task<Void, Never>] = [:]
+    // Removal-driven focus recoveries deferred because a managed-replacement
+    // burst was still pending, keyed by the very burst they wait on so two
+    // apps replacing windows in the same workspace cannot consume each
+    // other's deferral. A scheduling flag, not a focus memory.
+    private var deferredRemovalFocusRecoveryKeys: Set<ManagedReplacementKey> = []
     // Last time Nehir itself fronted a window of this pid. Purely for trace
     // attribution: an app activation observed shortly after our own
     // NSRunningApplication.activate is an echo of a Nehir request, not an
@@ -1086,7 +1091,7 @@ final class AXEventHandler: CGSEventDelegate {
         recentParkedFocusFollowByToken.removeAll()
         parkedFollowHoldByPid.removeAll()
         recentManagedAdmissionByToken.removeAll()
-        resetManagedReplacementState()
+        resetManagedReplacementState(resolvingDeferredFocusRecovery: false)
         deferredInactiveNativeActivationTokens.removeAll()
         deferredSameAppActiveNativeActivationTokens.removeAll()
         endWindowCloseFocusRecovery()
@@ -1290,7 +1295,7 @@ final class AXEventHandler: CGSEventDelegate {
 
     func resetDebugStateForTests() {
         debugCounters = .init()
-        resetManagedReplacementState()
+        resetManagedReplacementState(resolvingDeferredFocusRecovery: false)
         resetNativeFullscreenReplacementState()
         resetWindowStabilizationState()
         resetLifecycleVerificationState()
@@ -2472,11 +2477,38 @@ final class AXEventHandler: CGSEventDelegate {
         controller.focusBorderController.clear(matching: token)
 
         if let wsId = affectedWorkspaceId {
+            // Removal-driven focus recovery must yield to an in-flight same-pid
+            // replacement. Quick-terminal Cmd+N (and similar app flows) create a
+            // transient window, destroy it, and create the real window under a
+            // new id; the transient is confirmed focus when its destroy
+            // verifies, so immediate focusNextWindow recovery hands focus,
+            // selection, and the command target to a neighboring app — the
+            // "stolen resize target" family of captures. The replacement-burst
+            // correlation for (pid, workspace) is still pending at this moment
+            // (destroy-liveness verifies after 75 ms, bursts flush after
+            // 150 ms), so defer recovery to the burst flush: if the replacement
+            // window confirmed by then, recovery is unnecessary; a genuine
+            // close still recovers, ~100 ms later.
+            var recoverFocusNow = shouldRecoverFocus
+            let replacementKey = ManagedReplacementKey(pid: token.pid, workspaceId: wsId)
+            if shouldRecoverFocus, pendingManagedReplacementBursts[replacementKey] != nil {
+                recoverFocusNow = false
+                deferredRemovalFocusRecoveryKeys.insert(replacementKey)
+                controller.diagnostics.recordRuntimeViewportTrace(
+                    workspaceId: wsId,
+                    reason: "removed_focus_recovery_deferred",
+                    details: [
+                        "uptimeMs=\(traceUptimeMs())",
+                        "removedToken=\(token)",
+                        "reason=pending_managed_replacement"
+                    ]
+                )
+            }
             controller.layoutRefreshController.requestWindowRemoval(
                 workspaceId: wsId,
                 removedNodeId: removedNodeId,
                 niriOldFrames: oldFrames,
-                shouldRecoverFocus: shouldRecoverFocus
+                shouldRecoverFocus: recoverFocusNow
             )
         }
         scheduleWindowRuleReevaluationIfNeeded(targets: [.pid(token.pid)])
@@ -5278,13 +5310,23 @@ final class AXEventHandler: CGSEventDelegate {
         controller.layoutRefreshController.requestRefresh(reason: .appUnhidden)
     }
 
-    func resetManagedReplacementState() {
+    func resetManagedReplacementState(resolvingDeferredFocusRecovery: Bool = true) {
         for (_, task) in pendingManagedReplacementTasks {
             task.cancel()
         }
         pendingManagedReplacementTasks.removeAll()
         pendingManagedReplacementBursts.removeAll()
         nextManagedReplacementEventSequence = 0
+        // The bursts these deferrals were waiting on will never flush now, so
+        // resolve them here or the removed window's focus recovery is lost.
+        // Teardown paths pass false: nothing should be focused on the way out.
+        let deferred = deferredRemovalFocusRecoveryKeys
+        deferredRemovalFocusRecoveryKeys.removeAll()
+        guard resolvingDeferredFocusRecovery else { return }
+        for key in deferred {
+            deferredRemovalFocusRecoveryKeys.insert(key)
+            resumeDeferredRemovalFocusRecovery(for: key, replacementCreated: false)
+        }
     }
 
     func resetWindowStabilizationState() {
@@ -6977,6 +7019,14 @@ final class AXEventHandler: CGSEventDelegate {
     private func flushManagedReplacementBurst(for key: ManagedReplacementKey) {
         pendingManagedReplacementTasks.removeValue(forKey: key)?.cancel()
         guard let burst = pendingManagedReplacementBursts.removeValue(forKey: key) else { return }
+        // Runs after the replay below: a deferred removal focus recovery either
+        // becomes unnecessary (a replacement create arrived) or resumes now.
+        defer {
+            resumeDeferredRemovalFocusRecovery(
+                for: key,
+                replacementCreated: !burst.creates.isEmpty
+            )
+        }
         let elapsedMillis = max(
             0,
             Int(((managedReplacementCurrentUptime() - burst.firstEventUptime) * 1000).rounded())
@@ -7040,6 +7090,37 @@ final class AXEventHandler: CGSEventDelegate {
             )
         )
         replayManagedReplacementEvents(burst.orderedEvents, key: key, reason: "no_match")
+    }
+
+    private func resumeDeferredRemovalFocusRecovery(
+        for key: ManagedReplacementKey,
+        replacementCreated: Bool
+    ) {
+        guard deferredRemovalFocusRecoveryKeys.remove(key) != nil,
+              let controller
+        else {
+            return
+        }
+        let workspaceId = key.workspaceId
+        guard !replacementCreated else {
+            // The same-pid replacement window arrived; its own admission and
+            // focus request take over, so the deferred recovery is dropped.
+            controller.diagnostics.recordRuntimeViewportTrace(
+                workspaceId: workspaceId,
+                reason: "removed_focus_recovery_dropped",
+                details: [
+                    "uptimeMs=\(traceUptimeMs())",
+                    "reason=replacement_created"
+                ]
+            )
+            return
+        }
+        controller.diagnostics.recordRuntimeViewportTrace(
+            workspaceId: workspaceId,
+            reason: "removed_focus_recovery_resumed",
+            details: ["uptimeMs=\(traceUptimeMs())"]
+        )
+        controller.ensureFocusedTokenValid(in: workspaceId)
     }
 
     private func nextManagedReplacementSequence() -> UInt64 {
@@ -7613,6 +7694,10 @@ final class AXEventHandler: CGSEventDelegate {
         for key in managedReplacementKeys where key.pid == pid {
             pendingManagedReplacementTasks.removeValue(forKey: key)?.cancel()
             pendingManagedReplacementBursts.removeValue(forKey: key)
+        }
+        for key in deferredRemovalFocusRecoveryKeys where key.pid == pid {
+            // The app is gone, so no replacement window is coming.
+            resumeDeferredRemovalFocusRecovery(for: key, replacementCreated: false)
         }
 
         deferredInactiveNativeActivationTokens = deferredInactiveNativeActivationTokens.filter {
