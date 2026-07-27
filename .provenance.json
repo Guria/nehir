@@ -115,7 +115,8 @@
         "Tests/NehirTests/RuntimeMemoryDumpSectionTests.swift",
         "Tests/NehirTests/TerminatedAppStatePruningTests.swift",
         "Tests/NehirTests/SwipeAfterFullscreenExitWorkspaceTests.swift",
-        "Tests/NehirTests/DockAutohideReservationTests.swift"
+        "Tests/NehirTests/DockAutohideReservationTests.swift",
+        "Tests/NehirTests/ColumnWidthCycleViewportAnchorTests.swift"
       ],
       "copyright": [
         "2026 Aleksei Gurianov and Nehir contributors"
