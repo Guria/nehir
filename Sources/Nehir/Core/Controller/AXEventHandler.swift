@@ -139,7 +139,7 @@ struct NiriCreateFocusTraceEvent: Equatable {
             workspaceId: WorkspaceDescriptor.ID,
             reason: FocusWindowReason
         )
-        case activationSourceObserved(pid: pid_t, source: ActivationEventSource)
+        case activationSourceObserved(pid: pid_t, source: ActivationEventSource, selfFrontingAgeMs: Int?)
         case followFocusToParkedWindow(token: WindowToken, workspaceId: WorkspaceDescriptor.ID, decision: String)
         /// The macOS-observed reality for a focus Nehir just confirmed. Emitted
         /// alongside `focus_confirmed` so a reader can tell Nehir's *intent*
@@ -350,7 +350,13 @@ extension WindowCreatePlacementContext: CustomStringConvertible {
 }
 
 extension NiriCreateFocusTraceEvent: CustomStringConvertible {
+    private static let timestampFormat = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+
     var description: String {
+        "t=\(timestamp.formatted(Self.timestampFormat)) " + kindDescription
+    }
+
+    private var kindDescription: String {
         switch kind {
         case let .createSeen(windowId):
             "create_seen window=\(windowId)"
@@ -378,8 +384,9 @@ extension NiriCreateFocusTraceEvent: CustomStringConvertible {
             "relayout_activated_window token=\(token) workspace=\(workspaceId.uuidString)"
         case let .pendingFocusStarted(requestId, token, workspaceId, reason):
             "pending_focus_started request=\(requestId) token=\(token) workspace=\(workspaceId.uuidString) reason=\(reason.rawValue)"
-        case let .activationSourceObserved(pid, source):
-            "activation_source_observed pid=\(pid) source=\(source.rawValue)"
+        case let .activationSourceObserved(pid, source, selfFrontingAgeMs):
+            "activation_source_observed pid=\(pid) source=\(source.rawValue) "
+                + "self_fronting_age_ms=\(selfFrontingAgeMs.map(String.init) ?? "nil")"
         case let .followFocusToParkedWindow(token, workspaceId, decision):
             "follow_focus_to_parked_window token=\(token) workspace=\(workspaceId.uuidString) decision=\(decision)"
         case let .focusReality(
@@ -958,6 +965,25 @@ final class AXEventHandler: CGSEventDelegate {
     private var recentManagedAdmissionByToken: [WindowToken: RecentManagedAdmission] = [:]
     private var pendingManagedReplacementBursts: [ManagedReplacementKey: PendingManagedReplacementBurst] = [:]
     private var pendingManagedReplacementTasks: [ManagedReplacementKey: Task<Void, Never>] = [:]
+    // Last time Nehir itself fronted a window of this pid. Purely for trace
+    // attribution: an app activation observed shortly after our own
+    // NSRunningApplication.activate is an echo of a Nehir request, not an
+    // independent native event — the ambiguity that repeatedly misled the
+    // focus-theft investigations.
+    private var recentSelfFrontingByPid: [pid_t: TimeInterval] = [:]
+    private static let selfFrontingAttributionTTL: TimeInterval = 1.5
+    func recordSelfInitiatedFronting(pid: pid_t) {
+        recentSelfFrontingByPid[pid] = managedReplacementCurrentUptime()
+    }
+
+    private func selfFrontingAgeMs(for pid: pid_t) -> Int? {
+        let now = managedReplacementCurrentUptime()
+        recentSelfFrontingByPid = recentSelfFrontingByPid.filter {
+            now - $0.value <= Self.selfFrontingAttributionTTL
+        }
+        return recentSelfFrontingByPid[pid].map { Int(((now - $0) * 1000).rounded()) }
+    }
+
     private var windowCloseFocusRecoveryContext: WindowCloseFocusRecoveryContext?
     private var deferredInactiveNativeActivationTokens: Set<DeferredInactiveNativeActivationKey> = []
     private var deferredSameAppActiveNativeActivationTokens: Set<WindowToken> = []
@@ -3730,7 +3756,8 @@ final class AXEventHandler: CGSEventDelegate {
             .init(
                 kind: .activationSourceObserved(
                     pid: pid,
-                    source: source
+                    source: source,
+                    selfFrontingAgeMs: selfFrontingAgeMs(for: pid)
                 )
             )
         )
