@@ -32,6 +32,19 @@ rules, in short:
   boundary, not the algorithm.
 - Run the suite with `mise run test`; keep it gated in CI.
 
+## Temporary bug-tracing instrumentation
+
+When bug-tracing code is built in a dedicated throwaway worktree and will be
+removed before finalization, **never gate it** behind a feature flag, environment
+variable, verbosity setting, or any other opt-in control. Emit the temporary
+diagnostics unconditionally to the exact trace/capture sink the user will
+inspect.
+
+Before asking the user to reproduce the bug, verify that a known instrumentation
+marker appears in the actual captured artifact. Seeing it in another logging
+subsystem (for example, `os_log` when the user will provide a runtime-trace file)
+does not count.
+
 ## Changesets
 
 For user-visible changes, create a Changesets release-note fragment with:
