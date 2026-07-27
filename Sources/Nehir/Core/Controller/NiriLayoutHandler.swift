@@ -411,7 +411,8 @@ enum NiriWindowMoveResult {
             workspaceId: snapshot.workspaceId,
             monitor: snapshot.monitor,
             sessionPatch: WorkspaceSessionPatch(workspaceId: snapshot.workspaceId),
-            diff: diff
+            diff: diff,
+            fromScrollAnimationDriver: true
         )
     }
 

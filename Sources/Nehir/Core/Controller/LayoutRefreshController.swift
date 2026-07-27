@@ -4344,7 +4344,25 @@ final class LayoutDiffExecutor {
             return
         }
 
-        let diff = plan.diff
+        var diff = plan.diff
+
+        // While a scroll animation is registered for this workspace, the display-link
+        // driver applies fresh spring-sampled frames every tick. A scheduled relayout
+        // plan can be built before the animation starts and applied after it is well
+        // underway, pushing stale pre-animation frames that visibly snap windows
+        // backwards mid-animation. Frame changes from non-driver plans are dropped;
+        // the driver re-emits current frames on its next tick and lands the exact
+        // targets at settle, so nothing is lost.
+        if !plan.fromScrollAnimationDriver,
+           !diff.frameChanges.isEmpty,
+           refreshController.niriHandler.hasScrollAnimation(for: plan.workspaceId)
+        {
+            LayoutTrace.log(
+                "diffExecutor.dropStaleFrames ws=\(plan.workspaceId.uuidString.prefix(8)) "
+                    + "dropped=\(diff.frameChanges.count)"
+            )
+            diff.frameChanges = []
+        }
 
         // Whether this plan targets the workspace that is currently active on its own
         // monitor. Frame writes for an inactive workspace are the layout engine
