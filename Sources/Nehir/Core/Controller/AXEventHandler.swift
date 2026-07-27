@@ -953,6 +953,12 @@ final class AXEventHandler: CGSEventDelegate {
     // relying on the overlay being visibly on screen at the churn instant (it
     // races: the churn often leads the overlay show/hide signal).
     private var overlayCapablePids: Set<pid_t> = []
+    // Window ids the rule engine recognized as an app's overlay (e.g. the
+    // Ghostty quick terminal). The destroy of one of these windows IS the
+    // overlay-teardown signal, so guards can key on the event itself instead
+    // of on time-limited evidence recorded when the overlay opened — that
+    // evidence has usually expired by the time the destroy arrives.
+    private var recognizedOverlayWindowIdsByPid: [pid_t: Set<Int>] = [:]
     private var focusedWindowLossClosePrecursorByPid: [pid_t: FocusedWindowLossClosePrecursor] = [:]
     private var sameAppRecoveryRedirectLatches: [SameAppRecoveryRedirectLatchKey: SameAppRecoveryRedirectLatch] = [:]
     private static let parkedFocusFollowDedupTTL: TimeInterval = 1.5
@@ -977,6 +983,18 @@ final class AXEventHandler: CGSEventDelegate {
     // focus-theft investigations.
     private var recentSelfFrontingByPid: [pid_t: TimeInterval] = [:]
     private static let selfFrontingAttributionTTL: TimeInterval = 1.5
+    // Class stamp of the live confirmed token: the last confirmation that was
+    // NOT a cause-less external app-level event (i.e. it had a matching
+    // managed request, arrived as window-level focusedWindowChanged, or was
+    // the echo of Nehir's own fronting). A cause-less external activation for
+    // a DIFFERENT token, arriving while the explicitly confirmed app's overlay
+    // is closing, is that app's own "restore the previous app" call (Ghostty's
+    // QuickTerminalController re-activates the pre-overlay frontmost app on
+    // hide) and must not displace the explicit confirmation. Not a parallel
+    // token store: it annotates the existing confirmation flow and is only
+    // consulted against the live state plus overlay-lifecycle evidence.
+    private var lastExplicitManagedConfirmation: (token: WindowToken, at: TimeInterval)?
+
     func recordSelfInitiatedFronting(pid: pid_t) {
         recentSelfFrontingByPid[pid] = managedReplacementCurrentUptime()
     }
@@ -1086,12 +1104,14 @@ final class AXEventHandler: CGSEventDelegate {
         recentNonManagedFocusByPid.removeAll()
         recentSameAppTeardownByPid.removeAll()
         overlayCapablePids.removeAll()
+        recognizedOverlayWindowIdsByPid.removeAll()
         focusedWindowLossClosePrecursorByPid.removeAll()
         sameAppRecoveryRedirectLatches.removeAll()
         recentParkedFocusFollowByToken.removeAll()
         parkedFollowHoldByPid.removeAll()
         recentManagedAdmissionByToken.removeAll()
         resetManagedReplacementState(resolvingDeferredFocusRecovery: false)
+        lastExplicitManagedConfirmation = nil
         deferredInactiveNativeActivationTokens.removeAll()
         deferredSameAppActiveNativeActivationTokens.removeAll()
         endWindowCloseFocusRecovery()
@@ -1242,6 +1262,7 @@ final class AXEventHandler: CGSEventDelegate {
         recentSameAppWindowCloseByPid[pid] = now
         recentNonManagedFocusByPid[pid] = now
         overlayCapablePids.insert(pid)
+        recognizedOverlayWindowIdsByPid[pid, default: []].insert(windowId)
         focusedWindowLossClosePrecursorByPid[pid] = .init(
             workspaceId: workspaceId,
             preservedToken: token,
@@ -1296,6 +1317,7 @@ final class AXEventHandler: CGSEventDelegate {
     func resetDebugStateForTests() {
         debugCounters = .init()
         resetManagedReplacementState(resolvingDeferredFocusRecovery: false)
+        lastExplicitManagedConfirmation = nil
         resetNativeFullscreenReplacementState()
         resetWindowStabilizationState()
         resetLifecycleVerificationState()
@@ -1308,6 +1330,7 @@ final class AXEventHandler: CGSEventDelegate {
         recentNonManagedFocusByPid.removeAll()
         recentSameAppTeardownByPid.removeAll()
         overlayCapablePids.removeAll()
+        recognizedOverlayWindowIdsByPid.removeAll()
         focusedWindowLossClosePrecursorByPid.removeAll()
         sameAppRecoveryRedirectLatches.removeAll()
         recentParkedFocusFollowByToken.removeAll()
@@ -3198,13 +3221,14 @@ final class AXEventHandler: CGSEventDelegate {
         return false
     }
 
-    func armOverlayCapabilityIfNeeded(source: WindowDecisionSource, pid: pid_t) {
+    func armOverlayCapabilityIfNeeded(source: WindowDecisionSource, token: WindowToken) {
         guard case let .builtInRule(name) = source,
               Self.isOverlayCapableRuleName(name)
         else {
             return
         }
-        overlayCapablePids.insert(pid)
+        overlayCapablePids.insert(token.pid)
+        recognizedOverlayWindowIdsByPid[token.pid, default: []].insert(token.windowId)
     }
 
     func isOverlayCapablePidForTests(_ pid: pid_t) -> Bool {
@@ -4582,6 +4606,21 @@ final class AXEventHandler: CGSEventDelegate {
         )
         let activeRequest = controller.focusBridge.activeManagedRequest(for: entry.pid)
         let shouldConfirmRequest = confirmRequest ?? true
+
+        // Confirmation-class stamp only: a cause-less external app-level
+        // activation (no matching request, app-level source, not an echo of
+        // our own fronting) does not update the explicit stamp. Suppressing
+        // such activations here proved far too dangerous — genuine clicks and
+        // Cmd-Tab switches share the same event shape, and a false positive
+        // traps the user (each re-front refreshes the evidence). The stamp is
+        // consulted only in the narrowly scoped overlay-close anchor assert.
+        let causelessExternalConfirmation = (source == .workspaceDidActivateApplication
+            || source == .cgsFrontAppChanged)
+            && activeRequest?.token != entry.token
+            && selfFrontingAgeMs(for: entry.pid) == nil
+        if !causelessExternalConfirmation, shouldConfirmRequest {
+            lastExplicitManagedConfirmation = (entry.token, managedReplacementCurrentUptime())
+        }
         // Detect re-confirmation of an already-confirmed focus token. A
         // quick-terminal hide can cause macOS to re-focus the existing managed
         // window; without this guard the viewport scrolls back to a column the
@@ -5820,6 +5859,10 @@ final class AXEventHandler: CGSEventDelegate {
                     // instead of the tracked managed window. Preserve the current
                     // workspace before macOS activates a successor app/window.
                     armWindowCloseFocusRecoveryForFocusedAppEvent(pid: destroyedPid)
+                    assertManagedAnchorAfterOverlayClose(
+                        destroyedPid: destroyedPid,
+                        destroyedWindowId: Int(windowId)
+                    )
                 }
             }
             clearFocusedTargetForDestroyedWindow(
@@ -6551,6 +6594,74 @@ final class AXEventHandler: CGSEventDelegate {
     private func activeRecoveryRemainingMs() -> String {
         guard let context = windowCloseFocusRecoveryContext else { return "nil" }
         return String(Int(context.expiresAt.timeIntervalSinceNow * 1000))
+    }
+
+    /// An overlay closing is an unambiguous, Nehir-observable moment — the only
+    /// safe place to correct focus for this shape. The overlay's owner may
+    /// re-activate the app that was frontmost before the overlay opened
+    /// (Ghostty's quick terminal does exactly this on hide, deliberately ahead
+    /// of the system default), displacing the window the user established
+    /// during the overlay session. That activation arrives as a genuinely
+    /// external app-level event, indistinguishable per-event from a real
+    /// click or Cmd-Tab — so it must not be gated on arrival; it is corrected
+    /// here instead.
+    ///
+    /// The anchor is the last *explicitly* confirmed token (matching request,
+    /// window-level source, or an echo of our own fronting). That stamp is
+    /// immune to the cause-less overwrite, so it still names the user's window
+    /// whichever way the destroy and the restore interleave. Both cases are
+    /// covered by one assertion: with no window created during the session the
+    /// stamp is the preserved pre-overlay token and this is a no-op.
+    private func assertManagedAnchorAfterOverlayClose(destroyedPid: pid_t, destroyedWindowId: Int) {
+        // Key on the destroy of a window the rule engine recognized as this
+        // app's overlay. Time-limited evidence recorded when the overlay
+        // opened cannot be used: the owner restores the previous app before
+        // the destroy notification arrives — which can be seconds after the
+        // overlay was shown — by which point that evidence has expired.
+        guard recognizedOverlayWindowIdsByPid[destroyedPid]?.contains(destroyedWindowId) == true,
+              let controller,
+              controller.workspaceManager.activeFocusRequestToken == nil,
+              let confirmedToken = controller.workspaceManager.confirmedManagedFocusToken,
+              let confirmedEntry = controller.workspaceManager.entry(for: confirmedToken),
+              let monitorId = controller.workspaceManager.monitorId(for: confirmedEntry.workspaceId),
+              controller.workspaceManager.activeWorkspace(on: monitorId)?.id == confirmedEntry.workspaceId
+        else {
+            return
+        }
+
+        // Prefer the last explicitly confirmed token: the overlay owner's own
+        // "restore the previous app" call (Ghostty's quick terminal) may have
+        // already been accepted as the live confirmed token by the time the
+        // overlay's destroy is processed. The explicit stamp is immune to that
+        // cause-less overwrite, so it still names the window the user actually
+        // established (e.g. the Cmd+N window). Fall back to the live confirmed
+        // token when the stamped one is gone or elsewhere.
+        let anchorToken: WindowToken
+        if let lastExplicit = lastExplicitManagedConfirmation,
+           let explicitEntry = controller.workspaceManager.entry(for: lastExplicit.token),
+           explicitEntry.workspaceId == confirmedEntry.workspaceId
+        {
+            anchorToken = lastExplicit.token
+        } else {
+            anchorToken = confirmedToken
+        }
+
+        controller.diagnostics.recordRuntimeViewportTrace(
+            workspaceId: confirmedEntry.workspaceId,
+            reason: "overlay_close_anchor_asserted",
+            details: [
+                "uptimeMs=\(traceUptimeMs())",
+                "destroyedPid=\(destroyedPid)",
+                "anchor=\(anchorToken)",
+                "confirmedFocus=\(confirmedToken)",
+                "anchorSource=\(anchorToken == confirmedToken ? "confirmed" : "explicit_stamp")",
+                "nonManagedFocusActive=\(controller.workspaceManager.isNonManagedFocusActive)"
+            ]
+        )
+        guard anchorToken != confirmedToken || controller.currentBorderTarget()?.token != anchorToken else {
+            return
+        }
+        controller.focusWindow(anchorToken, reason: .overlayCloseAnchorAssert)
     }
 
     private func recordRecentSameAppWindowClose(pid: pid_t) {
