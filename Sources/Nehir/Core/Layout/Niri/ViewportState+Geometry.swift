@@ -610,9 +610,11 @@ extension ViewportState {
         let lastWidth = max(0, columns.last?.effectiveViewportWidth ?? 0)
         let total = totalWidth(columns: columns, gap: gap)
 
-        // Allow intentional edge overscroll: at the farthest point only a small sliver
-        // of the edge column remains visible on the opposite viewport edge. The gap
-        // keeps the visible sliver inside the layout boundary instead of flush to screen.
+        // Allow intentional persistent edge overscroll: at either farthest resting position,
+        // only a small sliver of the edge column remains visible on the opposite viewport edge.
+        // This is also intentional for a lone column or a strip narrower than the viewport: it
+        // lets the user expose and keep viewing the desktop after releasing the trackpad. The
+        // gap keeps the visible sliver inside the layout boundary instead of flush to screen.
         let lower = firstWidth * fraction + gap - viewportWidth
         let upper = total - lastWidth * fraction - gap
         return min(lower, upper) ... max(lower, upper)
@@ -686,12 +688,13 @@ extension ViewportState {
                 continue
             }
 
-            // Edge snaps at columnX ± gap exist to park a narrower-than-viewport column with a
-            // gap sliver visible (the niri overscroll idiom). For a column that approximately
-            // fills the viewport there is no neighbor to reveal, so a ±gap shift only loses
-            // working-area margin — omit them. Over-wide columns (wider than the viewport due
-            // to an app minimum or fixed size) still need their edge snaps so clipped
-            // leading/trailing content can be reached via scrollViewport.
+            // Per-column edge snaps at columnX ± gap align that column near a viewport edge.
+            // For a column that approximately fills the viewport, a ±gap shift only loses
+            // working-area margin, so omit these particular snaps. This is separate from the
+            // viewport-bound snaps appended below: those deliberately leave only an edge sliver
+            // visible so the desktop can remain exposed after the gesture ends. Over-wide
+            // columns (wider than the viewport due to an app minimum or fixed size) still need
+            // their per-column edge snaps so clipped content can be reached via scrollViewport.
             let columnApproximatelyFillsViewport = abs(width - viewportWidth) <= pixelTolerance
             if !columnApproximatelyFillsViewport {
                 points.append(SnapPoint(offset: bounded(columnX - gap), columnIndex: index, kind: .leftEdge))
@@ -712,6 +715,10 @@ extension ViewportState {
             columnX += width + gap
         }
 
+        // Always expose both viewport bounds as resting snaps, including when the strip is
+        // narrower than the viewport or contains only one column. These are persistent desktop-
+        // reveal positions: a fling may park the content with only edgeVisibleFraction visible,
+        // allowing the user to view the desktop without continuing to hold the trackpad.
         let bounds = viewportStartBounds(columns: columns, gap: gap, viewportWidth: viewportWidth)
         points.append(SnapPoint(offset: bounds.lowerBound, columnIndex: 0, kind: .rightEdge))
         points.append(SnapPoint(offset: bounds.upperBound, columnIndex: columns.count - 1, kind: .leftEdge))

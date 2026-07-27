@@ -62,6 +62,24 @@ private func makeContext(
         #expect(context.snapPoints.contains { $0.kind == .center })
     }
 
+    @Test func loneNarrowColumnKeepsPersistentDesktopRevealSnaps() {
+        let context = makeContext(widths: [1480], gap: 6, viewportWidth: 2466)
+        let offsets = context.snapPoints.map(\.offset)
+        let tolerance: CGFloat = 0.5
+
+        // A strip narrower than the viewport intentionally keeps both 5%-sliver bounds as
+        // resting snaps. They let a fling leave the desktop exposed after the trackpad is
+        // released; they are not merely clamp limits or "peek the neighboring column" snaps.
+        // lower = 1480*0.05 + 6 - 2466 = -2386
+        // upper = 1480 - 1480*0.05 - 6 = 1400
+        #expect(offsets.contains { abs($0 + 2386) <= tolerance })
+        #expect(offsets.contains { abs($0 - 1400) <= tolerance })
+
+        // A fling projected near the upper bound should settle there persistently.
+        let snap = context.closest(to: 1147)
+        #expect(abs((snap?.offset ?? .infinity) - 1400) <= tolerance)
+    }
+
     @Test func fullWidthColumnOmitsGapEdgeSnapPoints() {
         let context = makeContext(widths: [1000], gap: 8, viewportWidth: 1000)
         let offsets = context.snapPoints.map(\.offset)
