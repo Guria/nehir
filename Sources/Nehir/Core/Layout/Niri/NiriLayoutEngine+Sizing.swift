@@ -286,58 +286,92 @@ extension NiriLayoutEngine {
         workingFrame: CGRect,
         gaps: CGFloat
     ) {
-        guard let window = column.windowNodes.first else { return }
+        guard !column.windowNodes.isEmpty else { return }
 
-        func revealTargetWidth() {
-            ensureSelectionVisible(
-                node: window,
-                in: workspaceId,
-                motion: motion,
-                state: &state,
+        // A width command is not viewport navigation: the user's current anchor
+        // (including deliberate edge snaps) must survive the resize. Only move
+        // when the new width would leave the resized column clipped, and then by
+        // the minimum distance that restores full visibility.
+        func preserveViewportAnchorForTargetWidth() {
+            // Centered lone window: its anchor IS the center, not the previous
+            // offset, so the anchor-preservation rule below does not apply.
+            // Keep the pre-existing explicit-navigation reveal for this case;
+            // its known stale-override centering defect is addressed separately.
+            if let singleContext = singleWindowLayoutContext(in: workspaceId),
+               singleContext.container === column,
+               let window = column.windowNodes.first
+            {
+                ensureSelectionVisible(
+                    node: window,
+                    in: workspaceId,
+                    motion: motion,
+                    state: &state,
+                    workingFrame: workingFrame,
+                    gaps: gaps,
+                    revealTrigger: .explicitNavigation
+                )
+                return
+            }
+
+            let columns = self.columns(in: workspaceId)
+            guard let columnIndex = columnIndex(of: column, in: workspaceId) else { return }
+
+            if state.activeColumnIndex != columnIndex, !columns.isEmpty {
+                let boundedActiveIndex = state.activeColumnIndex.clamped(to: 0 ... (columns.count - 1))
+                let oldX = state.columnX(at: boundedActiveIndex, columns: columns, gap: gaps)
+                let newX = state.columnX(at: columnIndex, columns: columns, gap: gaps)
+                state.withRecordedViewportMutation(reason: "pendingWidth.rebaseActiveColumn") { state in
+                    state.viewOffsetPixels.offset(delta: Double(oldX - newX))
+                    state.activeColumnIndex = columnIndex
+                }
+                state.activatePrevColumnOnRemoval = nil
+                state.viewOffsetToRestore = nil
+            }
+
+            let context = makeViewportSnapContext(
+                columns: columns,
+                state: state,
                 workingFrame: workingFrame,
                 gaps: gaps,
-                revealTrigger: .explicitNavigation
+                intentionallyDoesNotFillViewport: loneWindowIntentionallyDoesNotFillViewport(in: workspaceId)
             )
-            ensureColumnWidthVisible(
-                column,
-                in: workspaceId,
-                motion: motion,
-                state: &state,
-                workingFrame: workingFrame,
-                gaps: gaps
+            let viewStart = context.currentViewStart(in: state)
+            if case .fullyVisible = context.visibility(of: columnIndex, viewportOffset: viewStart, in: state) {
+                return
+            }
+
+            let columnStart = state.columnX(at: columnIndex, columns: columns, gap: gaps)
+            let columnWidth = max(0, column.effectiveViewportWidth)
+            let viewportWidth = workingFrame.width
+            // Edge snaps keep a gap sliver visible (the niri overscroll idiom);
+            // clamping between them yields the minimal-displacement anchor. An
+            // over-wide column cannot be fully visible — anchor its leading edge.
+            let trailingEdgeStart = columnStart + columnWidth + gaps - viewportWidth
+            let leadingEdgeStart = columnStart - gaps
+            let newStart: CGFloat = if trailingEdgeStart > leadingEdgeStart {
+                leadingEdgeStart
+            } else {
+                viewStart.clamped(to: trailingEdgeStart ... leadingEdgeStart)
+            }
+
+            let scale = displayScale(in: workspaceId)
+            let targetOffset = context.targetOffset(
+                forViewportStart: newStart,
+                activeColumnIndex: columnIndex,
+                in: state
             )
+            let pixel = 1.0 / max(scale, 1.0)
+            guard abs(targetOffset - state.viewOffsetPixels.target()) > pixel else { return }
+            state.animateToOffset(targetOffset, motion: motion, scale: scale)
         }
 
         if restorePreviousWidthAfterFit {
             column.cachedWidth = targetWidth
             defer { column.cachedWidth = previousWidth }
-            revealTargetWidth()
+            preserveViewportAnchorForTargetWidth()
         } else {
             column.cachedWidth = targetWidth
-            revealTargetWidth()
-        }
-    }
-
-    private func ensureColumnWidthVisible(
-        _ column: NiriContainer,
-        in workspaceId: WorkspaceDescriptor.ID,
-        motion: MotionSnapshot,
-        state: inout ViewportState,
-        workingFrame: CGRect,
-        gaps: CGFloat
-    ) {
-        let columns = self.columns(in: workspaceId)
-        guard let columnIndex = columnIndex(of: column, in: workspaceId) else { return }
-        let context = makeViewportSnapContext(columns: columns, state: state, workingFrame: workingFrame, gaps: gaps)
-        let viewStart = context.currentViewStart(in: state)
-        guard case .fullyVisible = context.visibility(of: columnIndex, viewportOffset: viewStart, in: state) else {
-            guard let targetSnap = context.snapPoints(for: columnIndex).closest(to: viewStart) else { return }
-            state.animateToOffset(
-                context.targetOffset(for: targetSnap, in: state),
-                motion: motion,
-                scale: displayScale(in: workspaceId)
-            )
-            return
+            preserveViewportAnchorForTargetWidth()
         }
     }
 
