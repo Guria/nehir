@@ -213,6 +213,18 @@ import QuartzCore
     private var delayedParkReverifyAttemptsByWindowId: [Int: Int] = [:]
     private var nativeFullscreenRestoredFrameApplyTokens: Set<WindowToken> = []
 
+    /// Consecutive quantization-classified shrink refusals per window where the
+    /// observed frame never moved. A genuine cell-quantizing app snaps to the
+    /// nearest grid line on the first write; an observed size frozen across
+    /// several attempts is a hard app minimum wearing the quantization disguise.
+    struct QuantizationSkipStreak {
+        var observedSize: CGSize
+        var count: Int
+    }
+
+    private var quantizationSkipStreakByToken: [WindowToken: QuantizationSkipStreak] = [:]
+    static let quantizationSkipStreakLearnThreshold = 3
+
     func fastFrame(for token: WindowToken, axRef: AXWindowRef) -> CGRect? {
         activeFrameContext?.fastFrame(for: token, axRef: axRef)
             ?? AXWindowService.framePreferFast(axRef)
@@ -1103,6 +1115,7 @@ import QuartzCore
         layoutState.pendingRefresh = nil
         layoutState.didExecuteRefreshExecutionPlan = false
         nativeFullscreenRestoredFrameApplyTokens.removeAll()
+        quantizationSkipStreakByToken.removeAll()
 
         for (_, link) in layoutState.displayLinksByDisplay {
             link.invalidate()
@@ -1639,6 +1652,7 @@ import QuartzCore
             controller.axManager.removeWindowState(pid: token.pid, windowId: token.windowId)
             _ = controller.workspaceManager.removeWindow(pid: token.pid, windowId: token.windowId)
             controller.clearKeyboardFocusTarget(matching: token)
+            quantizationSkipStreakByToken[token] = nil
         }
 
         let shouldPreserveMissingWindows = shouldPreserveMissingWindowsDuringNativeFullscreen(
@@ -1717,6 +1731,7 @@ import QuartzCore
             controller.nativeFullscreenPlaceholderManager.remove(entry.token)
             controller.axManager.removeWindowState(pid: entry.pid, windowId: entry.windowId)
             controller.clearKeyboardFocusTarget(matching: entry.token)
+            quantizationSkipStreakByToken[entry.token] = nil
         }
         if let scratchpadTokenBeforeRemove,
            controller.workspaceManager.entry(for: scratchpadTokenBeforeRemove) == nil
@@ -4110,11 +4125,13 @@ import QuartzCore
         }
 
         if let confirmedFrame = result.confirmedFrame {
+            quantizationSkipStreakByToken[entry.token] = nil
             controller.axManager.confirmFrameWrite(for: result.windowId, frame: confirmedFrame)
             return
         }
 
         if liveFrameMatchesTarget(for: entry, targetFrame: result.targetFrame) {
+            quantizationSkipStreakByToken[entry.token] = nil
             controller.axManager.confirmFrameWrite(for: result.windowId, frame: result.targetFrame)
             return
         }
@@ -4129,16 +4146,51 @@ import QuartzCore
             // size. Accept the snapped frame and do NOT record an inferred resize minimum — pinning
             // it would over-constrain the solver and permanently break uniform fill heights among
             // sibling windows in the same workspace.
-            controller.axManager.confirmFrameWrite(for: result.windowId, frame: observedFrame)
-            _ = controller.focusBorderController.updateFrameHint(
-                for: entry.token,
-                frame: observedFrame,
-                forceOrdering: true
+            //
+            // Exception: a quantizing app moves to a nearby grid line on the first write. When
+            // the observed size stays frozen across several shrink attempts, the app is refusing
+            // outright — that is a hard minimum, and swallowing it leaves the canonical layout
+            // narrower than the live window, overlapping the neighboring column. Escalate to the
+            // inferred-minimum learn path below.
+            let isShrinkRefusal = targetSizeIsSmallerThanObservedSize(
+                result.targetFrame.size,
+                observedSize: observedFrame.size
             )
+            var streakCount = 0
+            if isShrinkRefusal {
+                if let streak = quantizationSkipStreakByToken[entry.token],
+                   abs(streak.observedSize.width - observedFrame.size.width) <= 0.5,
+                   abs(streak.observedSize.height - observedFrame.size.height) <= 0.5
+                {
+                    streakCount = streak.count + 1
+                } else {
+                    streakCount = 1
+                }
+                quantizationSkipStreakByToken[entry.token] = .init(
+                    observedSize: observedFrame.size,
+                    count: streakCount
+                )
+            } else {
+                quantizationSkipStreakByToken[entry.token] = nil
+            }
+
+            if streakCount < Self.quantizationSkipStreakLearnThreshold {
+                controller.axManager.confirmFrameWrite(for: result.windowId, frame: observedFrame)
+                _ = controller.focusBorderController.updateFrameHint(
+                    for: entry.token,
+                    frame: observedFrame,
+                    forceOrdering: true
+                )
+                controller.axManager.recordFrameApplyTrace(
+                    "resizeMin.skipQuantization id=\(entry.windowId) target=\(LayoutTrace.rect(result.targetFrame)) observed=\(LayoutTrace.rect(observedFrame)) streak=\(streakCount)"
+                )
+                return
+            }
+
+            quantizationSkipStreakByToken[entry.token] = nil
             controller.axManager.recordFrameApplyTrace(
-                "resizeMin.skipQuantization id=\(entry.windowId) target=\(LayoutTrace.rect(result.targetFrame)) observed=\(LayoutTrace.rect(observedFrame))"
+                "resizeMin.quantizationStreakEscalated id=\(entry.windowId) target=\(LayoutTrace.rect(result.targetFrame)) observed=\(LayoutTrace.rect(observedFrame)) streak=\(streakCount)"
             )
-            return
         }
 
         guard let minimumSize = inferredResizeMinimumSize(for: result, entry: entry) else { return }
