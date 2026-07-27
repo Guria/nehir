@@ -2204,7 +2204,24 @@ final class AXEventHandler: CGSEventDelegate {
             }
             let shouldRemove: Bool
             if windowServerAlive {
-                shouldRemove = axEnumerationSucceededAndMissingToken
+                // AX disappearance while the WindowServer still lists the
+                // window normally means the window really is gone (AX is the
+                // authoritative oracle for app-level window lifetime), so it
+                // is removed.
+                //
+                // The exception is an app tearing an overlay down: Ghostty
+                // transiently drops its regular window from the AX tree while
+                // the quick terminal closes, and a probe landing in that blind
+                // moment removed a live, focused window — handing its focus,
+                // the layout selection and the command target to a neighbour.
+                // Keep the window while that overlay teardown is in progress;
+                // it is then removed by the authoritative WindowServer signal
+                // if it really closed, or by the rescan's consecutive-miss
+                // sweep. Evidence-gated, so no timer and no effect on ordinary
+                // window closes.
+                let overlayTeardownInProgress = self.overlayCapablePids.contains(token.pid)
+                    && self.hasOverlayLifecycleEvidence(for: token.pid)
+                shouldRemove = axEnumerationSucceededAndMissingToken && !overlayTeardownInProgress
             } else if confirmAXWhenWindowServerMissing, axEnumerationContainsToken {
                 shouldRemove = false
             } else {
@@ -2214,6 +2231,16 @@ final class AXEventHandler: CGSEventDelegate {
                   controller.workspaceManager.entry(for: token) != nil
             else {
                 return
+            }
+            if windowServerAlive, axEnumerationSucceededAndMissingToken {
+                // The window is at least *probably* closing (AX already dropped
+                // it): arm the same-app close evidence now so the
+                // churn-suppression gates (e.g. same-app re-home to an
+                // inactive workspace) have their evidence when the native
+                // churn arrives moments later. A false alarm merely leaves a
+                // short-lived, harmless evidence record behind.
+                self.recordRecentSameAppWindowClose(pid: token.pid)
+                self.recordRecentSameAppTeardown(pid: token.pid)
             }
             if shouldRemove {
                 self.recordDestroyLivenessVerification(
@@ -6574,6 +6601,18 @@ final class AXEventHandler: CGSEventDelegate {
 
     private func isWithinSameAppCloseRecoveryWindow(pid: pid_t) -> Bool {
         hasRecentNonManagedFocus(for: pid) || hasRecentSameAppWindowClose(for: pid)
+    }
+
+    /// Whether this pid's overlay is in (or just finished) a close lifecycle:
+    /// the quick-terminal hide emits a focused-window loss before the app
+    /// re-activates the pre-overlay app, and the overlay's destroy records
+    /// same-app close/teardown evidence. Any of these marks the cause-less
+    /// external activation that follows as the overlay-close restore rather
+    /// than a genuine user app switch.
+    private func hasOverlayLifecycleEvidence(for pid: pid_t) -> Bool {
+        isWithinSameAppCloseRecoveryWindow(pid: pid)
+            || hasRecentSameAppTeardown(for: pid)
+            || focusedWindowLossClosePrecursor(for: pid) != nil
     }
 
     /// The workspace a recent follow_focus pinned for `pid`, if the hold has not
