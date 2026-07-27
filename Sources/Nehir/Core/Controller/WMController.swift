@@ -3909,6 +3909,36 @@ final class WMController {
         guard !shouldSuppressManagedFocusRecovery else { return }
         guard !workspaceManager.hasPendingNativeFullscreenTransition else { return }
 
+        // Branch tracing: focus recovery after a window removal has repeatedly
+        // been the actor that displaced a freshly confirmed window (stale
+        // destroy of an already-closed window arriving after a new window's
+        // confirmation). Record the arbitration inputs so a capture shows WHY
+        // the focusNextWindow branch was reachable.
+        let confirmedToken = workspaceManager.confirmedManagedFocusToken
+        let confirmedEntryWorkspace = confirmedToken.flatMap { workspaceManager.entry(for: $0)?.workspaceId }
+        let branch: String
+        if let requestToken = workspaceManager.activeFocusRequestToken,
+           workspaceManager.activeFocusRequestWorkspaceId == workspaceId
+        {
+            branch = "active_request:\(requestToken)"
+        } else if let confirmedToken, confirmedEntryWorkspace == workspaceId {
+            branch = "confirmed_in_workspace:\(confirmedToken)"
+        } else {
+            branch = "next_window"
+        }
+        diagnostics.recordRuntimeViewportTrace(
+            workspaceId: workspaceId,
+            reason: "ensure_focused_token_valid",
+            details: [
+                "branch=\(branch)",
+                "confirmed=\(confirmedToken.map(String.init(describing:)) ?? "nil")",
+                "confirmedEntryWs=\(confirmedEntryWorkspace?.uuidString ?? "nil")",
+                "activeRequest=\(workspaceManager.activeFocusRequestToken.map(String.init(describing:)) ?? "nil")",
+                "activeRequestWs=\(workspaceManager.activeFocusRequestWorkspaceId?.uuidString ?? "nil")",
+                "nonManaged=\(workspaceManager.isNonManagedFocusActive)"
+            ]
+        )
+
         if let activeFocusRequestToken = workspaceManager.activeFocusRequestToken,
            workspaceManager.activeFocusRequestWorkspaceId == workspaceId
         {
@@ -4112,6 +4142,7 @@ extension WMController {
         windowId: Int,
         axRef: AXWindowRef
     ) {
+        axEventHandler.recordSelfInitiatedFronting(pid: pid)
         windowFocusOperations.activateApp(pid)
         windowFocusOperations.focusSpecificWindow(pid, UInt32(windowId), axRef.element)
         windowFocusOperations.raiseWindow(axRef.element)
