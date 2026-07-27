@@ -1,6 +1,6 @@
 # Discovery: trackpad fling-snap overshoots to a neighbor column's far edge
 
-Groom 2026-07-07: still applicable — open; the fling-snap momentum/nearest-snap retuning is undecided (distinct from the in-flight lone-column overscroll plan `planned/20260707-lone-column-fling-snaps-offscreen-overscroll-bound.md`); `f81f8a9e` fixed the swipe dead-zone/projection clamp but not this snap-targeting behavior (verified against main 7a025b78).
+Groom 2026-07-27: still applicable — open; the fling-snap momentum/nearest-snap retuning is undecided. It is distinct from the lone-column 5%-sliver resting position, which was reclassified as intentional persistent desktop reveal in `../noop/20260707-lone-column-fling-snaps-to-offscreen-overscroll-bound.md`. Any future tuning must preserve that desktop-reveal feature. `f81f8a9e` fixed the swipe dead-zone/projection clamp but not this neighbor-targeting behavior.
 
 Status: discovery only — captures one reproducible "viewport jump" that is
 **not** the unrecorded-mutation class. It is the intended fling-snap behavior

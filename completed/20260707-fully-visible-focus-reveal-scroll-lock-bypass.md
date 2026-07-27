@@ -182,8 +182,9 @@ or not), with no subsequent `relayout.viewportOffsetChanged` retarget.
   `allowFullyVisibleAutomaticRecenter: false`; diagnostics were not redesigned.
 - `snapCandidates`, `fillsViewport`, `centeredFillingViewportStart`,
   `ViewportState+Geometry.swift`, and `ViewportState+Gestures.swift` stayed
-  untouched, preserving the parallel snap-grid fence
-  (`../planned/20260707-lone-column-fling-snaps-offscreen-overscroll-bound.md`).
+  untouched. The former parallel snap-grid plan was later cancelled: the
+  lone-column 5%-sliver position is intentional persistent desktop reveal
+  (`../noop/20260707-lone-column-fling-snaps-to-offscreen-overscroll-bound.md`).
 - Final change set included helper signature propagation through
   explicit-navigation paths plus tests and changeset; the behavior core remained
   in `NiriLayoutEngine+ViewportCommands.swift`.

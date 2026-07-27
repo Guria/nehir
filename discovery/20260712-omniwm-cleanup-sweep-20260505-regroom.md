@@ -143,11 +143,13 @@ stops.
 
 Nehir already consumes trackpad momentum phases
 (`Sources/Nehir/Core/Controller/MouseEventHandler.swift:145-155`, `:418`,
-`:547` — `momentumPhase` plumbed through gesture handling) and has an active
-body of fling/overshoot tuning work
-(`discovery/20260707-lone-column-fling-snaps-to-offscreen-overscroll-bound.md`,
-`completed/20260701-fix-trackpad-recognition-debt-and-release-projection.md`).
-**Verdict: capability present; remaining work is tuning, already tracked.**
+`:547` — `momentumPhase` plumbed through gesture handling). Trackpad recognition
+and release projection work is recorded in
+`completed/20260701-fix-trackpad-recognition-debt-and-release-projection.md`.
+The separately observed lone/narrow-column 5%-sliver resting position is
+intentional persistent desktop reveal, not outstanding momentum tuning; see
+`../noop/20260707-lone-column-fling-snaps-to-offscreen-overscroll-bound.md`.
+**Verdict: capability present.**
 
 ### BarutSRB/OmniWM#180 — Remember window positions after restart — 🟢 largely present
 
