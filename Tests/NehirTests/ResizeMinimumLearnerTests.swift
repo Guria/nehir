@@ -54,7 +54,7 @@ struct ResizeMinimumLearnerTests {
     /// quantization threshold pins an inferred minimum >= the observed size.
     /// This is the genuine-refusal path (the app clamped a too-small frame back
     /// to its real minimum), not grid-snapping.
-    @Test func oversizedVerificationMismatchPinsInferredMinimum() {
+    @Test func oversizedVerificationMismatchPinsInferredMinimum() throws {
         let controller = makeLayoutPlanTestController()
         guard let monitor = controller.workspaceManager.monitors.first,
               let workspaceId = controller.workspaceManager.activeWorkspaceOrFirst(on: monitor.id)?.id
@@ -84,10 +84,9 @@ struct ResizeMinimumLearnerTests {
         )
         controller.layoutRefreshController.handleResizeMinimumFrameApplyResult(result, workspaceId: workspaceId)
 
-        let pinned = controller.workspaceManager.inferredResizeMinimumSize(for: token)
-        #expect(pinned != nil)
-        #expect(pinned!.height >= observedFrame.height)
-        #expect(pinned!.width >= observedFrame.width)
+        let pinned = try #require(controller.workspaceManager.inferredResizeMinimumSize(for: token))
+        #expect(pinned.height >= observedFrame.height)
+        #expect(pinned.width >= observedFrame.width)
     }
 
     /// Gap B #3 — A verificationMismatch whose overshoot is WITHIN the 32pt cell-
