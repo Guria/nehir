@@ -293,23 +293,25 @@ extension NiriLayoutEngine {
         // when the new width would leave the resized column clipped, and then by
         // the minimum distance that restores full visibility.
         func preserveViewportAnchorForTargetWidth() {
-            // Centered lone window: its anchor IS the center, not the previous
-            // offset, so the anchor-preservation rule below does not apply.
-            // Keep the pre-existing explicit-navigation reveal for this case;
-            // its known stale-override centering defect is addressed separately.
+            // Centered lone window: its anchor IS the center, so it tracks the
+            // changing width instead of preserving the previous offset.
+            // Resolving the single-window geometry here also clears the stale
+            // policy width override that otherwise masks the target width from
+            // viewport geometry, freezing the old center offset and pinning the
+            // window to its old x-position while it grows.
             if let singleContext = singleWindowLayoutContext(in: workspaceId),
-               singleContext.container === column,
-               let window = column.windowNodes.first
+               singleContext.container === column
             {
-                ensureSelectionVisible(
-                    node: window,
+                let scale = displayScale(in: workspaceId)
+                guard let geometry = prepareSingleWindowViewport(
                     in: workspaceId,
-                    motion: motion,
-                    state: &state,
                     workingFrame: workingFrame,
-                    gaps: gaps,
-                    revealTrigger: .explicitNavigation
-                )
+                    scale: scale,
+                    gaps: gaps
+                ) else { return }
+                let pixel = 1.0 / max(scale, 1.0)
+                guard abs(geometry.centerOffset - state.viewOffsetPixels.target()) > pixel else { return }
+                state.animateToOffset(geometry.centerOffset, motion: motion, scale: scale)
                 return
             }
 
