@@ -73,6 +73,7 @@ enum FocusWindowReason: String, Equatable {
     case closeRecoveryStableRedirect
     case overlayStableRecoveryRedirect
     case closeRecoveryPreconfirmStableRedirect
+    case overlayCloseAnchorAssert
     case deferredFocus
 }
 
@@ -2756,7 +2757,7 @@ final class WMController {
         let decision = applyingManualOverride
             ? decisionApplyingManualOverride(baseDecision, manualOverride: manualOverride)
             : baseDecision
-        axEventHandler.armOverlayCapabilityIfNeeded(source: baseDecision.source, pid: token.pid)
+        axEventHandler.armOverlayCapabilityIfNeeded(source: baseDecision.source, token: token)
         let evaluation = WindowDecisionEvaluation(
             token: token,
             facts: facts,
