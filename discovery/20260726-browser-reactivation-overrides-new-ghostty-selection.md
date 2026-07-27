@@ -1,29 +1,57 @@
-# Browser reactivation overrides a newly confirmed Ghostty window and steals the resize target
+# Quick-terminal close steals the newly created window's focus, selection and resize target
 
-**Status:** source-backed root cause. Verified against `main` at `fe0596b6` on
-2026-07-26. The runtime sequence proves which focus event changed the target and
-which window each resize command acted on. The exact AppKit/Ghostty reason macOS
-emitted the browser activation remains unproven; that uncertainty does not affect
-the confirmed Nehir-side arbitration failure.
+**Status:** root cause fully identified and fixed; fix pending final real-repro
+validation. Verified against `main` on 2026-07-28.
+
+The investigation ran through three successive understandings, all recorded
+below because the discarded ones carry the load-bearing lessons:
+
+1. *(wrong)* an unattributed external browser activation displaced the new
+   window;
+2. *(wrong)* a last-writer-wins race between concurrent confirmations;
+3. *(correct)* **two independent displacement paths**: (a) Nehir falsely
+   removing a live window when AX transiently drops it during the
+   quick-terminal close, which funnels into `focusNextWindow` on a neighbor —
+   entirely Nehir's own doing, and the source of the "unattributed"
+   activations, which were echoes of Nehir's own focus requests; and (b)
+   Ghostty's quick terminal deliberately re-activating the app that was
+   frontmost before it opened (source-verified upstream), which is genuinely
+   external and can only be corrected after the fact.
+
+The original title referred to the browser because that was the first
+(incorrect) reading; the mechanism is app-agnostic and reproduces with any
+neighboring application.
 
 ## Executive verdict
 
-A normal Ghostty window was admitted, selected, and confirmed as managed focus.
-One second later macOS delivered `NSWorkspace.didActivateApplicationNotification`
-for the previously focused Helium browser. Nehir accepted that app-level event as
-an unrelated activation on the already-active workspace, confirmed the browser,
-and changed the Niri `selectedNodeId` back to the browser. The next two
-column-width commands therefore resized Helium, because `cycleSize` deliberately
-targets `selectedNodeId`.
+Creating a regular window from the Ghostty quick terminal (Cmd+N) and then
+closing the quick terminal leaves focus, the Niri selection, and therefore the
+command target on a *neighboring* window. Column-width commands then resize that
+neighbor, because `cycleSize` deliberately targets `selectedNodeId`.
 
-The fundamental defect is not in width calculation. It is that the activation
-layer cannot distinguish a deliberate user app switch from an automatic
-cross-app focus return, yet it lets either one replace a freshly confirmed
-managed window as soon as that window's focus request has completed. Existing
-overlay/close-recovery guards do not cover this shape: their evidence is keyed to
-the observed successor pid or requires an inactive workspace, while this event
-was for a different pid on the same active workspace after Ghostty confirmation
-had already cleared non-managed focus.
+Two independent paths produce this, and both had to be fixed:
+
+**Path A — Nehir removes a live window (Nehir's own defect).** While the quick
+terminal closes, Ghostty transiently drops its regular window from the AX tree.
+Nehir's destroy-liveness probe reads that blind moment as death
+(`ws_alive=true ax=missing_token → remove`), removes a live, focused window, and
+`ensureFocusedTokenValid` falls through to `focusNextWindow` on a neighbor. The
+neighbor's `workspaceDidActivateApplication` that follows — the "unattributed
+browser activation" of the original reading — is the *echo of Nehir's own
+request*. A second trigger into the same funnel is the transient window Ghostty
+itself creates and destroys during Cmd+N.
+
+**Path B — Ghostty restores the pre-overlay app (external, source-verified).**
+`QuickTerminalController` captures `NSWorkspace.shared.frontmostApplication` on
+show and calls `previousApp.activate()` on hide, deliberately ahead of the
+system default. It does not know a regular window was created during the
+session. This cannot be vetoed from Nehir's side — only corrected immediately
+after, at the overlay's destroy.
+
+The lasting architectural lesson: focus authority must never be arbitrated on
+the *arrival side* of an ambiguous activation (a genuine click/Cmd-Tab is
+byte-identical to the unwanted restore); it must be corrected at an
+unambiguous, Nehir-observable moment.
 
 ## Topology and identities
 
@@ -377,6 +405,306 @@ The experiment does not identify which native component initiated that real
 cross-app switch. It does prove that the switch is tightly coupled to the separate
 quick-terminal close operation, reproduces the original target theft, and bypasses
 protection because the observed successor pid differs from the overlay owner pid.
+
+## Clean-build controlled matrix (2026-07-27)
+
+A second controlled round on unmodified `main` separated the suspected actors
+and explained the intermittency. Topology per run: one workspace with a regular
+Ghostty window and Helium `58013:2212`; quick terminal `912:124`.
+
+**A — selection deliberately diverged from focus (Ghostty selected via Nehir
+command, then Cmd-Tab to Helium), quick terminal toggled: no issue.** The
+Niri selection memory (`layoutRefreshRememberedFocus`) does not hijack focus on
+its own when it disagrees with the confirmed token.
+
+**B — selection and focus aligned on Helium, quick terminal toggled: no
+issue.**
+
+**C — the original shape (quick terminal, Cmd+N, close): intermittent, and
+the decisive actor is Nehir's own window-removal focus recovery.**
+
+A further controlled round (Calendar `91802:5500` as the lone starting window,
+quick terminal `912:124`, new Ghostty window `912:5516` created via Cmd+N)
+caught the failing run's decisive sequence directly:
+
+```text
+destroy_liveness_decision window=5510 origin=ax_destroyed
+  outcome=defer reason=window_server_alive
+destroy_liveness_verification token=WindowToken(pid: 912, windowId: 5510)
+  ws_alive=true ax=missing_token outcome=remove reason=ax_missing_token
+pending_focus_started request=63
+  token=WindowToken(pid: 91802, windowId: 5500) reason=focusNextWindow
+focus_confirmed token=WindowToken(pid: 91802, windowId: 5500)
+  source=workspaceDidActivateApplication
+```
+
+Window `912:5510` is a Ghostty window from a *previous* session step that the
+user had already closed. Its AX destroy verified late — after the new window
+`5516` had been admitted and confirmed (`managed_focus_confirmed 912:5516`
+precedes the removal). The removal's focus recovery then issued
+`focusNextWindow` and focused the neighbor, displacing the fresh confirmation.
+
+The "unattributed app activation" is thereby explained: the
+`workspaceDidActivateApplication` for the neighbor that confirms right after is
+the **echo of Nehir's own `focusNextWindow` request** (native app activation
+caused by our `NSRunningApplication.activate`), not an event the neighboring
+app produced on its own. The same triplet exists in the original controlled
+capture, immediately before the "unattributed" browser activation:
+
+```text
+destroy_liveness_decision window=552 ... outcome=defer reason=window_server_alive
+destroy_liveness_verification token=WindowToken(pid: 912, windowId: 552)
+  origin=ax_destroyed ws_alive=true ax=missing_token outcome=remove
+pending_focus_started request=90
+  token=WindowToken(pid: 79206, windowId: 173) reason=focusNextWindow
+```
+
+Two corroborating facts from the failing run:
+
+- The Niri selection (`preferredFocus`) never adopted the new window at all:
+  it reads `WindowToken(pid: 91802, windowId: 5500)` both during the new
+  window's admission and in the final state, with
+  `selectedNode` unchanged.
+- The reproduction correlates with *prior user actions that leave a pending
+  destroy* (closing the previous test window before the run), not with the
+  starting column width per se; the width setups differed only because
+  producing them involved closing/resizing windows beforehand.
+
+## Final mechanism: quick-terminal Cmd+N creates a transient window whose destroy funnels into focusNextWindow (2026-07-28)
+
+Branch tracing added to `WMController.ensureFocusedTokenValid` closed the open
+link. A further instrumented reproduction (Calendar `91802:5500` as the lone
+neighbor) shows the complete funnel inside one second:
+
+```text
+window_admitted   912:5574  context=focused_admission        (transient)
+pending_focus_started request=14 token=912:5574 reason=layoutRefreshRememberedFocus
+managed_focus_confirmed 912:5574
+
+destroy_liveness_decision window=5574 outcome=defer reason=window_server_alive
+destroy_liveness_verification token=912:5574 ax=missing_token outcome=remove
+pending_focus_started request=15 token=91802:5500 reason=focusNextWindow   ← угон
+
+window_admitted   912:5577  context=focused_admission        (the real window)
+pending_focus_started request=16 token=912:5577 reason=layoutRefreshRememberedFocus
+managed_focus_confirmed 912:5577
+managed_focus_confirmed 91802:5500                            ← neighbor echo wins
+```
+
+**Ghostty's Cmd+N from the quick terminal creates a short-lived transient
+window, destroys it itself, and creates the real window under a new window
+id.** Nehir admits and confirms the transient; when its destroy verifies
+(`ax_missing_token`), the confirmed token now points at a token whose entry no
+longer exists — so `ensureFocusedTokenValid` legitimately cannot re-confirm it
+and falls through to `focusNextWindow`, which resolves to the neighbor. The
+real window is admitted and confirmed moments later, and the outcome is a race
+between its confirmation and the echo of the neighbor request; the neighbor
+frequently wins, becoming focus, selection, and command target.
+
+The identical triplet exists in the very first controlled capture
+(`552` admitted → `destroy_liveness 552 → remove` →
+`request=90 focusNextWindow → 79206:173` → `562` admitted), so this is the
+single root mechanism across every reproduction. The stale-destroy variant
+(an earlier user-closed window's late destroy, e.g. `912:5510`) is a second
+trigger into the same funnel, with the same displacement shape. In both
+variants `shouldRecoverFocus` arms *legitimately* — the removed window really
+was the confirmed focus. The defect is that removal-driven focus recovery is
+blind to the managed-replacement shape: a same-pid replacement create is
+already in flight (Nehir even has burst-correlation machinery for exactly this
+destroy+create pattern), yet recovery fires immediately and hands the focus,
+selection, and command target to a neighboring app.
+
+A residual tracing anomaly is recorded for completeness: the viewport-ring
+twins of the destroy-liveness records (and the `removed_window_entered`
+marker) did not appear in the capture even though the always-on create-focus
+ring shows the events and the entry existed at the emission guard. This does
+not affect the mechanism above, which is carried entirely by the always-on
+ring plus the timestamped confirmation log.
+
+## The external re-home is Ghostty's own restore (source-verified, 2026-07-28)
+
+With self-fronting attribution in place (`self_fronting_age_ms` on every
+observed activation), a further reproduction separated the two displacement
+actors definitively. After the false-removal funnel was fixed, the remaining
+displacement arrived as `workspaceDidActivateApplication` with
+`self_fronting_age_ms=nil` — genuinely external, not an echo of any Nehir
+request — about one second after the new window's explicit confirmation.
+
+The initiator is Ghostty itself. `ghostty-org/ghostty`,
+`macos/Sources/Features/QuickTerminal/QuickTerminalController.swift`
+(<https://github.com/ghostty-org/ghostty/blob/main/macos/Sources/Features/QuickTerminal/QuickTerminalController.swift>):
+
+On show (`animateIn`), the quick terminal captures the frontmost app — the
+hotkey is global, so this is the browser/calendar the user was in:
+
+```swift
+if !NSApp.isActive {
+    if let previousApp = NSWorkspace.shared.frontmostApplication,
+       previousApp.bundleIdentifier != Bundle.main.bundleIdentifier {
+        self.previousApp = previousApp
+    }
+}
+```
+
+On hide (`animateOut`), it re-activates that app unconditionally:
+
+```swift
+if let previousApp = self.previousApp {
+    self.previousApp = nil
+    if !previousApp.isTerminated {
+        _ = previousApp.activate(options: [])
+    }
+}
+```
+
+Crucially, Ghostty does this *deliberately ahead of* the system default that
+would otherwise bring another (our Cmd+N) Ghostty window forward — its own
+comment: "we do this BEFORE the animation below because when the animation
+completes macOS will bring forward another window." Ghostty's restore logic
+does not know a regular window was created during the quick-terminal session.
+
+Consequences: the activation cannot be vetoed from Nehir's side (another
+process's `activate()` is applied natively before any notification reaches
+us), so a one-to-two-frame visible focus flash to the previous app is
+unavoidable at our layer; Nehir's suppression re-fronts the explicit token
+within tens of milliseconds. Eliminating the flash at the source is an
+upstream Ghostty candidate: skip the `previousApp` restore when a regular
+Ghostty window was created or focused during the quick-terminal session.
+
+## Shipped fix shape (2026-07-28) — event-derived, no tuned timing constants
+
+1. **AX disappearance alone never removes a WindowServer-alive window.** The
+   destroy-liveness probe keeps such windows (`shouldRemove = false`); genuine
+   closes are removed by the authoritative WindowServer signal
+   (`cgs_window_closed`, or a verification observing `ws_alive=false`), and a
+   missed event is swept by the periodic rescan's consecutive-miss removal.
+   This closes the false-removal funnel (transient AX blindness during the
+   quick-terminal close) without a recheck timer.
+2. **Close evidence arms at the first probe.** When AX has dropped a window
+   that the WindowServer still lists, the same-app close/teardown evidence is
+   recorded immediately — the churn-suppression gates (same-app re-home to an
+   inactive workspace) consult it within ~150 ms of the close and must not be
+   disarmed by removal deferral. (A deferral without this arming caused a
+   workspace-switch regression during validation: closing a focused Ghostty
+   window activated a same-app window on another workspace because the gate's
+   evidence had not been recorded yet.)
+3. **Confirmation-class stamp, consulted only at the overlay-close assert.**
+   Every non-cause-less confirmation (matching request, window-level source,
+   or an echo of Nehir's own fronting) stamps the live token as explicit. The
+   stamp is *passive*: it never blocks an activation. The overlay-close assert
+   then re-fronts the stamped token rather than the live confirmed one,
+   because Ghostty's restore may already have been accepted as the live token
+   by the time the overlay's destroy is processed.
+
+   **Rejected variant — suppressing cause-less activations at the confirm
+   site.** An earlier revision suppressed the cause-less activation itself
+   (gated on overlay-lifecycle evidence for the explicitly confirmed pid) and
+   re-fronted the explicit token. It regressed catastrophically in validation:
+   the user could no longer activate Finder by click or Cmd-Tab at all. Two
+   reasons, both fundamental:
+   - A genuine click/Cmd-Tab into an app whose window Nehir does not currently
+     hold a request for produces *exactly* the same event shape as the
+     unwanted restore (`workspaceDidActivateApplication`, no matching request,
+     `self_fronting=nil`). Per-event, the two are indistinguishable.
+   - The suppression is self-sustaining: each re-front is itself a Nehir
+     fronting that refreshes the overlay-owner's evidence, so once armed the
+     trap re-arms on every user attempt. Trace evidence: repeated
+     `causeless_external_confirm_suppressed token=<Finder> explicitToken=<Ghostty>`
+     records ~500 ms apart, each corresponding to a user click that never took
+     effect.
+
+   The invariant this yields: **never arbitrate focus on the arrival side of
+   an ambiguous event.** Act only at an unambiguous Nehir-observable moment —
+   here, the overlay's own destroy.
+4. **Removal-driven focus recovery yields to an in-flight same-pid
+   replacement** (managed-replacement burst pending → defer; replacement
+   create arrived → recovery dropped; nothing arrived → recovery resumes).
+5. **Overlay-close anchor assert on the live confirmed token** remains as the
+   re-front backstop for orderings where the destroy processes first.
+
+## Why the preserved token at quick-terminal open is kept
+
+The "memory of the window that was focused when the quick terminal opened" is
+not a separate store. Entering non-managed (overlay) focus with
+`preserveFocusedToken=true` simply *does not erase* the live
+`confirmedManagedFocusToken`; `isNonManagedFocusActive` marks that native
+focus temporarily belongs elsewhere. Any explicit confirmation while the
+overlay is open (the Cmd+N window) naturally overwrites it, so "restore the
+historical app" cannot happen by construction.
+
+It is load-bearing in three ways: the plain open/close case resolves as a
+no-op (the anchor never went away); every churn-suppression gate uses the
+preserved token as its "current target" (the working same-pid suppression in
+the control capture held precisely because `confirmedFocus` survived the
+overlay); and `ensureFocusedTokenValid`'s safe re-confirm branch depends on
+it — with a cleared token, every relayout during an overlay would fall into
+the `focusNextWindow` branch, turning this intermittent bug into a permanent
+one. Removing it would not touch the transient-destroy funnel and would break
+the empty open/close invariant, replacing a cheap memory with close-time
+heuristics.
+
+## Fix-attempt postmortem (2026-07-27)
+
+Two implementation attempts were made and reverted; both failed for the same
+architectural reason and their failure modes are evidence for the design
+requirements below.
+
+**Attempt 1 — cross-app churn guard at the arrival side.** A new suppression
+guard (evidence: recent same-app close of an overlay-capable pid within a
+600 ms window, plus a 120 ms defer for signal lag) mirroring the same-pid
+churn guards. Rejected before validation on review: it extends the
+accumulating per-shape heuristic pattern (a fifth reactive guard with its own
+TTLs), and the plain open-close case only works because a *different*
+heuristic happens to catch it.
+
+**Attempt 2 — overlay-close anchor assertion.** A per-workspace anchor
+updated on every confirmation except the cause-less shape, asserted via an
+explicit focus request when the overlay's window is destroyed. Validation
+failed in two ways:
+
+- The anchor diverged from user reality. A machine-generated request
+  (`layoutRefreshRememberedFocus`) updated the anchor as if it were user
+  intent, while a genuine user switch that arrived as a cause-less app-level
+  event did not update it. The assertion then re-fronted a window against the
+  user's actual choice and moved the viewport.
+- The assertion fired on every untracked AX-element destroy of the overlay
+  pid within the 2-second evidence TTL, repeatedly re-fronting the anchor and
+  resetting the user's clicks.
+
+The lesson generalizes: the system already has four focus memories — the live
+confirmed token (with overlay preservation), the Niri selection /
+`rememberedFocusToken` (which `LayoutRefreshController` actively asserts via
+`layoutRefreshRememberedFocus` requests), the close-recovery
+`WindowCloseFocusRecoveryContext.preservedToken`, and the pid-keyed
+close/overlay evidence maps feeding per-shape guards. Every additional memory
+or reactive guard increases the number of writers racing for the same
+authority. The fix must *reduce* the number of arbiters, not add one.
+
+## Design requirements for the actual fix
+
+1. **Removal-driven focus recovery must yield to an in-flight same-pid
+   replacement.** When the removed window's pid has a pending
+   managed-replacement correlation (or a same-pid create observed within the
+   correlation window), `focusNextWindow` recovery must defer until the burst
+   resolves; the replacement window's own admission/confirmation then makes
+   recovery unnecessary. Only when no replacement materializes does recovery
+   run as today (a genuine close still needs it).
+2. **Machine-issued focus requests are not user intent.** `focusNextWindow`
+   (and `layoutRefreshRememberedFocus`) requests must never displace a fresher
+   explicit confirmation; their target resolution must re-validate against the
+   live confirmed token at issue time.
+3. **No new focus memories.** The two reverted attempts (arrival-side cross-app
+   guard; overlay-close anchor assertion) both failed by adding a parallel
+   authority. Whatever state arbitration needs must derive from the existing
+   confirmation and replacement-correlation flow.
+4. **The Niri selection memory is a follower, not an authority.** Clean-build
+   run A shows it does not hijack on its own; the failing run additionally
+   shows it never adopting the new window (`preferredFocus` stayed on the
+   neighbor throughout) — selection following confirmed focus is part of the
+   same fix boundary.
+5. **Keep `preserveFocusedToken` at overlay open unchanged.** It implements
+   the no-op open/close invariant and anchors the working suppression gates;
+   it is not an actor in the funnel.
 
 ## Source-backed causal chain
 
