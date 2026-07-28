@@ -57,15 +57,16 @@ Scale used below:
 - **Hard part:** every oracle lies sometimes. AX destroy, CGS destroy, first AX enumeration, and structural replacement are each valid in some cases and false in others.
 - **Recommended slice:** do not attempt a single grand lifecycle rewrite. Land the CGS liveness/dual-oracle plan first, then separately instrument and fix replacement-burst admission.
 
-### VR-1 evaluation — automatic viewport movement
+### VR-1 evaluation — automatic viewport movement and missing required reveal
 
-- **Why it hurts:** it makes the viewport feel haunted: focus, relayout, or fling moves content when the user did not ask for movement.
+- **Why it hurts:** it makes the viewport feel haunted in either direction: focus, relayout, or fling moves content when the user did not ask, or an accepted focus remains entirely outside the viewport.
 - **Best quick wins:**
   - shipped in `c6eaafb9`: stop automatic focus-confirm reveal when the target is fully visible;
   - shipped in `c6eaafb9`: honor scroll lock before choosing a fully-visible automatic reveal target;
+  - actionable: distinguish an in-flight spring that already lands on the confirmed target from one that will carry it off-screen;
   - still open: filter offscreen bound snaps when the column strip is narrower than the viewport.
-- **Hard part:** preserving explicit navigation behavior. User-initiated focus/move commands still need to reveal clipped or offscreen targets.
-- **Recommended slice:** this is the cleanest near-term win cluster. The fully-visible focus-confirm slice shipped in `c6eaafb9`; land the lone-column snap-bound slice before broader viewport-policy work.
+- **Hard part:** preserving explicit navigation and live viewport-control behavior. User-initiated focus/move commands still need to reveal offscreen targets, while gestures, useful springs, deliberate scroll-away, and close-recovery anchors must not be overridden indiscriminately.
+- **Recommended slice:** keep required-reveal eligibility separate from automatic recentering. The fully-visible focus-confirm slice shipped in `c6eaafb9`; the captured spring-preservation failure now owns the opposite boundary, while lone-column snap-bound work remains separate.
 
 ### XD-1 evaluation — cross-display move/reveal ordering
 
@@ -151,12 +152,13 @@ Scale used below:
 
 **Do not merge blindly:** LC-1 spans different event oracles (AX destroy, CGS space destroy, full-rescan AX enumeration, and replacement correlation). The common issue is missing cross-oracle verification and over-trusting one lifecycle signal, not a single call site.
 
-## VR-1 — automatic reveal/recenter/snap movement bypasses user intent or visibility checks
+## VR-1 — automatic reveal/recenter/snap policy bypasses user intent or focus visibility
 
-**Common issue:** layout/reveal code often treats selection/focus changes as a mandate to re-center or snap even when the target is already fully visible, scroll lock is active, or a spring is settling. These bugs feel like the viewport moves by itself. Intentional user-driven persistent desktop-reveal snaps are not part of this cluster.
+**Common issue:** layout/reveal code can move the viewport when a target is already sufficiently visible, or suppress the only required reveal when an accepted focus is entirely outside the viewport. Selection, focus, viewport control, and reveal completion are distinct authorities; neither “always move” nor “always preserve” is a valid global rule. Intentional user-driven persistent desktop-reveal snaps are not part of this cluster.
 
 **Primary links:**
 
+- [`20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md`](20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md) — **captured required-reveal suppression.** A focus confirmation arrived during a spring whose destination was away from the target column; `.springInFlight` skipped `scrollToReveal`, no duplicate confirmation followed, and the spring settled with the selected/confirmed window `hidden:left`. The same guard also covers gestures, already-confirmed duplicates, and close-recovery pins, but those require separate contracts rather than a blanket parked-target override.
 - [`20260713-resize-command-target-offscreen-selection.md`](20260713-resize-command-target-offscreen-selection.md) — resize commands target persistent `selectedNodeId`, not the visible viewport column; focus validation can rewrite only selection, after which sizing intentionally reveals the offscreen selected column. Also inventories the distinct focus, selection, viewport, and command-target authorities that must not be collapsed into one global invariant.
 - [`20260713-same-app-close-successor-reveals-before-actionable-removal.md`](20260713-same-app-close-successor-reveals-before-actionable-removal.md) — close-related same-app focus was accepted before actionable close/removal evidence armed recovery; the existing focused-window-loss precursor was `nil`. The parked-target reveal then executed normally but violated the higher-level stable-close policy (`targetViewStart 12299.7 → 10265.7`). Root ownership is CR-1's pre-removal evidence gap; VR-1 is the visible movement surface.
 - [`../completed/20260707-fully-visible-focus-reveal-recenters-viewport-ignoring-scroll-lock.md`](../completed/20260707-fully-visible-focus-reveal-recenters-viewport-ignoring-scroll-lock.md) and [`../completed/20260707-fully-visible-focus-reveal-scroll-lock-bypass.md`](../completed/20260707-fully-visible-focus-reveal-scroll-lock-bypass.md) — completed in `c6eaafb9`: automatic focus reveal no longer recenters a fully visible column and the fully-visible arm now honors scroll lock for automatic triggers. A 2026-07-08 two-window capture strengthened the policy boundary: with both windows fully visible and scroll lock disabled, automatic focus still chose the center snap, so the shipped fix stops fully-visible automatic movement even when unlocked.
