@@ -77,6 +77,7 @@ final class WindowActionHandler {
     private let axWindowRefProvider: (UInt32, pid_t) -> AXWindowRef?
     private let visibleOwnedWindowsProvider: () -> [NSWindow]
     private let frontOwnedWindow: (NSWindow) -> Void
+    private var navigationGeneration: UInt64 = 0
 
     @ObservationIgnored
     private lazy var overviewController: OverviewController = {
@@ -474,6 +475,8 @@ final class WindowActionHandler {
         guard let controller else { return false }
         guard let engine = controller.niriEngine else { return false }
 
+        navigationGeneration &+= 1
+        let expectedNavigationGeneration = navigationGeneration
         let currentWsId = controller.interactionWorkspace()?.id
 
         if workspaceId != currentWsId {
@@ -532,9 +535,22 @@ final class WindowActionHandler {
                 rememberedFocusToken: token
             )
         )
+        // The refresh may settle long after this call — another navigation, a
+        // workspace switch, or a window move can land in between. Re-verify
+        // that this is still the latest navigation, its workspace remains the
+        // interaction workspace, and the target window still lives there.
         controller.layoutRefreshController
-            .commitWorkspaceTransition(reason: .workspaceTransition) { [weak controller] in
-                controller?.focusWindow(token, reason: .windowActionRefreshCompletion)
+            .commitWorkspaceTransition(reason: .workspaceTransition) { [weak self, weak controller] in
+                guard let self,
+                      let controller,
+                      self.navigationGeneration == expectedNavigationGeneration,
+                      controller.interactionWorkspace()?.id == workspaceId,
+                      controller.workspaceManager.visibleWorkspaceIds().contains(workspaceId),
+                      controller.workspaceManager.entry(for: token)?.workspaceId == workspaceId
+                else {
+                    return
+                }
+                controller.focusWindow(token, reason: .windowActionRefreshCompletion)
             }
         return true
     }
