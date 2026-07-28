@@ -148,11 +148,14 @@ enum WorkspaceBarDataSource {
             )
         }
 
-        if options.hideEmptyWorkspaces {
-            workspaces = workspaces.filter(\.hasBarOccupancy)
-        }
-
         let activeWorkspaceId = workspaceManager.activeWorkspace(on: monitor.id)?.id
+
+        if options.hideEmptyWorkspaces {
+            // The active workspace stays on the bar even when empty: it is the only
+            // item that reports focus, so hiding it leaves the bar with no "you are
+            // here" indicator and reflows the remaining pills.
+            workspaces = workspaces.filter { $0.hasBarOccupancy || $0.workspace.id == activeWorkspaceId }
+        }
 
         return workspaces.map { snapshot in
             let orderedTiledEntries = WorkspaceEntryOrdering.orderedEntries(
@@ -199,7 +202,10 @@ enum WorkspaceBarDataSource {
     /// (matching `moveTargetItems`), so disconnected workspaces never appear.
     /// Foreign pills carry no window icons (a navigation aid, not a duplicate of
     /// the home bar); `hideEmptyWorkspaces` is still respected based on real
-    /// workspace occupancy.
+    /// workspace occupancy, except for each other display's own active
+    /// workspace, which is kept even when empty so every display keeps the
+    /// pill marking where it is parked — the same carve-out the local bar
+    /// makes for the focused workspace.
     private static func foreignWorkspaceItems(
         for monitor: Monitor,
         options: WorkspaceBarProjectionOptions,
@@ -218,7 +224,7 @@ enum WorkspaceBarDataSource {
                     in: workspace.id,
                     showFloatingWindows: options.showFloatingWindows
                 ).filter { !workspaceManager.isStickyWindow($0.token) }
-                if options.hideEmptyWorkspaces, projectedEntries.isEmpty { continue }
+                if options.hideEmptyWorkspaces, projectedEntries.isEmpty, workspace.id != activeOnOther { continue }
                 items.append(
                     WorkspaceBarItem(
                         id: workspace.id,

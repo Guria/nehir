@@ -386,29 +386,87 @@ private func makeWorkspaceBarTestMetadata(
     }
 
     @Test @MainActor func foreignEmptyWorkspacesRespectHideEmptyWorkspaces() throws {
-        let fixture = makeTwoMonitorLayoutPlanTestController()
-        let controller = fixture.controller
-        let primaryMonitor = fixture.primaryMonitor
-        let secondaryWorkspaceId = fixture.secondaryWorkspaceId
-        // The secondary display's workspace has no windows.
+        let fixture = try makeForeignHideEmptyFixture()
 
-        let projection = WorkspaceBarDataSource.workspaceBarProjection(
-            for: primaryMonitor,
-            options: WorkspaceBarProjectionOptions(
-                deduplicateAppIcons: false,
-                hideEmptyWorkspaces: true,
-                showFloatingWindows: false,
-                showWorkspacesFromOtherDisplays: true
-            ),
-            workspaceManager: controller.workspaceManager,
-            appInfoCache: controller.appInfoCache,
-            niriEngine: nil,
-            focusedToken: controller.workspaceManager.confirmedManagedFocusToken,
-            settings: controller.settings
-        )
+        let projection = foreignHideEmptyProjection(fixture)
 
-        // An empty foreign workspace is hidden, consistent with local items.
-        #expect(projection.items.contains(where: { $0.id == secondaryWorkspaceId }) == false)
-        #expect(projection.items.contains(where: \.isForeign) == false)
+        // The secondary's idle workspace is empty and is not where that display
+        // is parked, so the empty policy hides it as it does for local items.
+        #expect(projection.items.contains(where: { $0.id == fixture.idleSecondaryWorkspaceId }) == false)
     }
+
+    @Test @MainActor func foreignActiveWorkspaceSurvivesHideEmptyWorkspaces() throws {
+        let fixture = try makeForeignHideEmptyFixture()
+
+        let projection = foreignHideEmptyProjection(fixture)
+
+        // The workspace the secondary display is parked on stays as a bare pill
+        // even while empty, so every display keeps its "parked here" marker.
+        let foreign = try #require(
+            projection.items.first(where: { $0.id == fixture.activeSecondaryWorkspaceId })
+        )
+        #expect(foreign.isForeign)
+        #expect(foreign.isActiveOnHomeDisplay)
+        #expect(foreign.isFocused == false)
+        #expect(foreign.windows.isEmpty)
+    }
+}
+
+@MainActor
+private struct ForeignHideEmptyFixture {
+    let controller: WMController
+    let primaryMonitor: Monitor
+    let activeSecondaryWorkspaceId: WorkspaceDescriptor.ID
+    let idleSecondaryWorkspaceId: WorkspaceDescriptor.ID
+}
+
+/// Two displays where the secondary owns two workspaces, both empty: one it is
+/// parked on and one it is not. That is the only topology that separates the
+/// empty policy from the active carve-out on the foreign path.
+@MainActor
+private func makeForeignHideEmptyFixture() throws -> ForeignHideEmptyFixture {
+    let primaryMonitor = makeLayoutPlanPrimaryTestMonitor(name: "Primary")
+    let secondaryMonitor = makeLayoutPlanSecondaryTestMonitor(name: "Secondary", x: 1920)
+    let controller = makeLayoutPlanTestController(
+        monitors: [primaryMonitor, secondaryMonitor],
+        workspaceConfigurations: [
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main),
+            WorkspaceConfiguration(name: "2", monitorAssignment: .secondary),
+            WorkspaceConfiguration(name: "3", monitorAssignment: .secondary)
+        ]
+    )
+
+    let workspaceManager = controller.workspaceManager
+    let primaryWorkspaceId = try #require(workspaceManager.workspaceId(for: "1", createIfMissing: false))
+    let activeSecondaryWorkspaceId = try #require(workspaceManager.workspaceId(for: "2", createIfMissing: false))
+    let idleSecondaryWorkspaceId = try #require(workspaceManager.workspaceId(for: "3", createIfMissing: false))
+
+    #expect(workspaceManager.setActiveWorkspace(primaryWorkspaceId, on: primaryMonitor.id))
+    #expect(workspaceManager.setActiveWorkspace(activeSecondaryWorkspaceId, on: secondaryMonitor.id))
+    _ = workspaceManager.setInteractionMonitor(primaryMonitor.id)
+
+    return ForeignHideEmptyFixture(
+        controller: controller,
+        primaryMonitor: primaryMonitor,
+        activeSecondaryWorkspaceId: activeSecondaryWorkspaceId,
+        idleSecondaryWorkspaceId: idleSecondaryWorkspaceId
+    )
+}
+
+@MainActor
+private func foreignHideEmptyProjection(_ fixture: ForeignHideEmptyFixture) -> WorkspaceBarProjection {
+    WorkspaceBarDataSource.workspaceBarProjection(
+        for: fixture.primaryMonitor,
+        options: WorkspaceBarProjectionOptions(
+            deduplicateAppIcons: false,
+            hideEmptyWorkspaces: true,
+            showFloatingWindows: false,
+            showWorkspacesFromOtherDisplays: true
+        ),
+        workspaceManager: fixture.controller.workspaceManager,
+        appInfoCache: fixture.controller.appInfoCache,
+        niriEngine: nil,
+        focusedToken: fixture.controller.workspaceManager.confirmedManagedFocusToken,
+        settings: fixture.controller.settings
+    )
 }
