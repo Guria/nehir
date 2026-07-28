@@ -47,6 +47,9 @@ The three highest-confidence, lowest-effort ones:
   `Sources/Nehir/UI/WorkspaceBar/WorkspaceBarDataSource.swift:151-155` filters on
   `hasBarOccupancy` *before* `activeWorkspaceId` is computed, so navigating to an
   empty workspace leaves no item reporting `isFocused`. XS.
+  **Shipped (2026-07-28)** on `main` as `64e0b98c`, with the carve-out extended to
+  the foreign-display pills — the open question this sweep left undecided. See
+  [`../completed/20260728-hide-empty-workspaces-drops-focused-workspace.md`](../completed/20260728-hide-empty-workspaces-drops-focused-workspace.md).
 - **`a91f20e8` — the Niri viewport is never clamped when a column right of the
   active one is removed.** `removeColumnByIdx`'s `removedIdx > activeIdx` branch
   returns with `viewportNeedsRecalc == false` and no recalculation
@@ -352,7 +355,7 @@ unconfirmed 🟡 on PR BarutSRB/OmniWM#478.
 
 | Upstream commit | One-line change | Nehir-equivalent already present? (file:line) | Verdict | Effort | Nehir files |
 | --- | --- | --- | --- | --- | --- |
-| `ac0a0287` Keep the active workspace on the bar when hiding empty ones | Hide-empty filter keeps the workspace you are standing on. | **No — the pre-fix code is present verbatim.** `workspaces = workspaces.filter(\.hasBarOccupancy)` runs *before* `activeWorkspaceId` is computed (`Sources/Nehir/UI/WorkspaceBar/WorkspaceBarDataSource.swift:151-155`), so navigating to an empty workspace with Hide Empty Workspaces on leaves no item with `isFocused == true` (`:190`). The foreign-display path has the same hole (`:221`). | **🔴** | XS | `WorkspaceBarDataSource.swift` |
+| `ac0a0287` Keep the active workspace on the bar when hiding empty ones | Hide-empty filter keeps the workspace you are standing on. | **No — the pre-fix code is present verbatim.** `workspaces = workspaces.filter(\.hasBarOccupancy)` runs *before* `activeWorkspaceId` is computed (`Sources/Nehir/UI/WorkspaceBar/WorkspaceBarDataSource.swift:151-155`), so navigating to an empty workspace with Hide Empty Workspaces on leaves no item with `isFocused == true` (`:190`). The foreign-display path has the same hole (`:221`). **Shipped 2026-07-28 as `64e0b98c`**; the foreign path got the same carve-out. | ~~**🔴**~~ **shipped** | XS | `WorkspaceBarDataSource.swift` |
 | `100586d2` + `d5df958d` Recover multitouch devices across lifecycle changes | Verified startup, callback generations, bounded retries, CoreHID topology observer, unlock revalidation. | **Partial — sleep/wake only, with a confirmed silent-deafness path.** See sub-finding. | **🔴** (port the intent, not the 740-line diff) | M | `Sources/Nehir/Core/Multitouch/MultitouchGestureSource.swift`, `MultitouchBinding.swift`, `MouseEventHandler.swift`, `ServiceLifecycleManager.swift` |
 | `28a17e22` Add system window corner controls and border geometry | Corrected SkyLight corner-radii symbol signature, per-corner radii with retry, global corner-radius settings UI. | **Decomposes — see sub-findings.** Nehir's `BorderManager` is the 1:1 counterpart of upstream's `BorderSurfaceApplier` and carries the pre-fix shape (`Sources/Nehir/Core/Border/BorderManager.swift:22-34`, `:81-118`, `:149-158`). `noop/20260617-omniwm-362-border-corner-radius.md` owns "border radius matches real window radius" and remains correct — this commit goes beyond it. | **🟡** (2 of 4 sub-items) | S–M | `Sources/Nehir/Core/SkyLight/SkyLight.swift`, `BorderManager.swift`, `BorderWindow.swift` |
 | `6d0dd894` Move running-app inventory into Core | Core owns regular-app discovery, merging tracked-window overlays with `NSWorkspace.runningApplications`. | **Behaviour gap + architectural fit.** Nehir's "Pick from running apps" list is built only from admitted, standard-layout managed entries (`Sources/Nehir/Core/Controller/WindowActionHandler.swift:801-825`, consumed at `Sources/Nehir/UI/AppRulesView.swift:496-520`), so a running app with no managed window — precisely the app you most need a rule for — cannot be picked; it also drops apps with no cached bundle id and sorts by raw `<`. The Core extraction lines up with `discovery/20260702-mega-file-growth-and-narrow-wmcontroller-revisit.md`. | **🟡** | S | `WindowActionHandler.swift`, new `Sources/Nehir/Core/Controller/RunningAppInventory.swift`, `AppRulesView.swift` |
@@ -521,7 +524,7 @@ given status only and cross-referenced.
 | BarutSRB/OmniWM#487 fullscreen apps stuck after quit | **now closed** (2026-07-27) | Closed by `044441c4`. Lane 2 confirmed the evidence loss at Nehir's `PreparedDestroy` boundary. | **🔴** |
 | BarutSRB/OmniWM#509 / BarutSRB/OmniWM#510 Focus Previous uses stale selection | **now closed** (2026-07-27) | Closed by `2a7041d8`. Lane 3 confirmed both halves absent in Nehir. | **🔴** / 🟡 |
 | BarutSRB/OmniWM#493, BarutSRB/OmniWM#486 gestures / Magic Trackpad not working | **now closed** | Closed by `100586d2` + `d5df958d`. Lane 4 confirmed Nehir's silent-deafness path. | **🔴** |
-| BarutSRB/OmniWM#503 / BarutSRB/OmniWM#504, BarutSRB/OmniWM#501 / BarutSRB/OmniWM#502, BarutSRB/OmniWM#122 bar centring / hit area | **now closed** | Closed by `ac0a0287`, `436cff3f`, `49c22c03`. Lane 4: `ac0a0287` **🔴 XS**, `436cff3f` 🟡 verify, `49c22c03` 🟢. | mixed |
+| BarutSRB/OmniWM#503 / BarutSRB/OmniWM#504, BarutSRB/OmniWM#501 / BarutSRB/OmniWM#502, BarutSRB/OmniWM#122 bar centring / hit area | **now closed** | Closed by `ac0a0287`, `436cff3f`, `49c22c03`. Lane 4: `ac0a0287` ~~**🔴 XS**~~ **shipped 2026-07-28 as `64e0b98c`**, `436cff3f` 🟡 verify, `49c22c03` 🟢. | mixed |
 | BarutSRB/OmniWM#482 allow moving workspaces between monitors | **now closed** (2026-07-27) | Closed by `9babdb12` + `a5064c50`. Nehir owns this as `planned/20260619-nehir-62-move-workspace-to-monitor.md` — **which Lane 3 found is contradicted on its central mechanism**. | **🟡** (revise the plan) |
 | BarutSRB/OmniWM#490 "Hotkey May Conflict" never goes away | **now closed** (2026-07-23) | Closed by `8eaaa42a`. Lane 4: Nehir refreshes from the observable side — 🟢. Residual XS verify: does Nehir's advisory actually clear after a rebind? | **🟢** / 🟡 verify |
 | BarutSRB/OmniWM#518 Terminal.app cannot be stacked in a Niri column since 0.5.7 | **open** | **Nehir is architecturally on the correct side and should not port `348232a0`.** Upstream's frame-refusal quarantine broke character-cell apps. Nehir has no quarantine (grep `quarantin` over `Sources/Nehir` is empty) and instead classifies cell quantization as bidirectional overshoot, accepts the snapped frame, and deliberately records no inferred minimum (`Sources/Nehir/Core/Controller/LayoutRefreshController.swift:4139-4188`, the comment names Ghostty). **Residual risk worth verifying:** after 3 consecutive frozen shrink refusals Nehir escalates to a hard inferred minimum (`:4177`, threshold at `:226`), which in a deep column stack (height/N) could over-constrain a Terminal-like app. Not reproduced. | **🟢** for the port / **🟡** verify the streak threshold |
@@ -597,10 +600,16 @@ shape in `main` and is XS–S.
    with no release note; do not describe it as fixing an observable defect. Detail
    and the generalisable lesson:
    [`20260728-skylight-key-window-nan-location-symptom-not-reproducible.md`](20260728-skylight-key-window-nan-location-symptom-not-reproducible.md).
-2. **🔴 `ac0a0287` Hide Empty Workspaces drops the focused workspace (XS).** Filter on
-   `hasBarOccupancy || id == activeWorkspaceId` at
+2. **~~🔴~~ `ac0a0287` Hide Empty Workspaces drops the focused workspace (XS) — shipped.**
+   Filter on `hasBarOccupancy || id == activeWorkspaceId` at
    `Sources/Nehir/UI/WorkspaceBar/WorkspaceBarDataSource.swift:151-155`, and decide
    the same question for the foreign-pill path (`:221`), which upstream does not have.
+   **Shipped 2026-07-28 on `main` as `64e0b98c`.** The foreign-pill question was
+   decided **yes** — each display keeps the workspace it is parked on, so its pill
+   survives the empty filter (`:227`). It was first decided the other way, partly on
+   the strength of an existing test asserting the old behaviour; that test recorded
+   the pre-carve-out world, not a policy that still held. Detail and the lesson:
+   [`../completed/20260728-hide-empty-workspaces-drops-focused-workspace.md`](../completed/20260728-hide-empty-workspaces-drops-focused-workspace.md).
 3. **🔴 Consolidate the workspace-move focus handoff (S).** One `finishWorkspaceMove`
    helper reading `focusFollowsWindowToMonitor`, five call sites, one behaviour test
    suite — fixes a user-visible setting that silently does nothing on three of five
