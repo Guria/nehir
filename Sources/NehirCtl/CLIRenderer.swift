@@ -79,7 +79,6 @@ enum CLIRenderer {
             return .internalError
         case .disabled,
              .overviewOpen,
-             .protocolMismatch,
              .unauthorized,
              .staleWindowId,
              .notFound,
@@ -215,13 +214,6 @@ enum CLIRenderer {
             return response.status.rawValue
         }
 
-        if response.code == .protocolMismatch,
-           let result = response.result,
-           case let .version(version) = result.payload
-        {
-            return "error: protocol_mismatch (server protocol \(version.protocolVersion), app \(version.appVersion ?? "unknown"))"
-        }
-
         if let code = response.code {
             return "\(response.status.rawValue): \(code.rawValue)"
         }
@@ -230,10 +222,7 @@ enum CLIRenderer {
     }
 
     private static func humanReadableVersion(_ version: IPCVersionResult) -> String {
-        if let appVersion = version.appVersion {
-            return "\(appVersion) (protocol \(version.protocolVersion))"
-        }
-        return "protocol \(version.protocolVersion)"
+        version.appVersion ?? "unknown"
     }
 
     private static func formattedActiveWorkspace(
@@ -455,7 +444,6 @@ enum CLIRenderer {
         format: CLIOutputFormat
     ) -> String {
         let rows = [
-            ["protocol-version", String(payload.protocolVersion)],
             ["app-version", payload.appVersion ?? "-"],
             ["authorization-required", payload.authorizationRequired ? "true" : "false"],
             ["window-id-scope", payload.windowIdScope],

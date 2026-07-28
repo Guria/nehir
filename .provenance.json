@@ -120,7 +120,8 @@
         "Tests/NehirTests/QuantizationRefusalStreakTests.swift",
         "Tests/NehirTests/QuickTerminalCloseAnchorTests.swift",
         "Tests/NehirTests/ScrollLockRevealPolicyTests.swift",
-        "Tests/NehirTests/ScrollLockFocusCommandRevealTests.swift"
+        "Tests/NehirTests/ScrollLockFocusCommandRevealTests.swift",
+        "Tests/NehirTests/IPCWireVersionFieldTests.swift"
       ],
       "copyright": [
         "2026 Aleksei Gurianov and Nehir contributors"

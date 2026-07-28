@@ -38,28 +38,6 @@ actor IPCApplicationBridge {
             )
         }
 
-        let versionResult = await MainActor.run {
-            let queryRouter = IPCQueryRouter(
-                controller: controller,
-                appVersion: appVersion,
-                sessionToken: sessionToken
-            )
-            return IPCResult(version: queryRouter.versionResult())
-        }
-
-        if request.version != NehirIPCProtocol.version {
-            if request.kind == .version {
-                return .success(id: request.id, kind: .version, result: versionResult)
-            }
-
-            return .failure(
-                id: request.id,
-                kind: IPCResponseKind(requestKind: request.kind),
-                code: .protocolMismatch,
-                result: versionResult
-            )
-        }
-
         switch request.payload {
         case .none:
             return await MainActor.run {
@@ -73,7 +51,11 @@ actor IPCApplicationBridge {
                 case .ping:
                     return .success(id: request.id, kind: .ping, result: IPCResult(pong: queryRouter.pingResult()))
                 case .version:
-                    return .success(id: request.id, kind: .version, result: versionResult)
+                    return .success(
+                        id: request.id,
+                        kind: .version,
+                        result: IPCResult(version: queryRouter.versionResult())
+                    )
                 case .command,
                      .query,
                      .rule,

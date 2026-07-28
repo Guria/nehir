@@ -216,22 +216,6 @@ import Testing
         #expect(String(decoding: rulesOutput.data, as: UTF8.self).contains("rule-1\tcom.example.terminal"))
     }
 
-    @Test func protocolMismatchTextOutputIncludesServerVersionDetails() throws {
-        let response = IPCResponse.failure(
-            id: "mismatch",
-            kind: .query,
-            code: .protocolMismatch,
-            result: IPCResult(version: IPCVersionResult(protocolVersion: 3, appVersion: "1.2.3"))
-        )
-
-        let output = try CLIRenderer.responseOutput(response, format: .text)
-        let text = String(decoding: output.data, as: UTF8.self)
-
-        #expect(text.contains("protocol_mismatch"))
-        #expect(text.contains("server protocol 3"))
-        #expect(text.contains("1.2.3"))
-    }
-
     @Test func reconcileDebugOutputRendersSnapshotAndTraceSections() throws {
         let response = IPCResponse.success(
             id: "reconcile-debug",

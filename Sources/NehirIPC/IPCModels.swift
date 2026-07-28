@@ -6,10 +6,6 @@
 
 import Foundation
 
-public enum NehirIPCProtocol {
-    public static let version = 6
-}
-
 public struct IPCNoPayload: Codable, Equatable, Sendable {
     public init() {}
 }
@@ -70,7 +66,6 @@ public enum IPCErrorCode: String, Codable, Equatable, Sendable, Error {
     case invalidRequest = "invalid_request"
     case invalidArguments = "invalid_arguments"
     case invalidState = "invalid_state"
-    case protocolMismatch = "protocol_mismatch"
     case disabled = "ignored_disabled"
     case overviewOpen = "ignored_overview"
     case unauthorized = "unauthorized"
@@ -1850,20 +1845,17 @@ public struct IPCRequest: Codable, Equatable, Sendable {
         case subscribe(IPCSubscribeRequest)
     }
 
-    public let version: Int
     public let id: String
     public let kind: IPCRequestKind
     public let authorizationToken: String?
     public let payload: Payload
 
     public init(
-        version: Int = NehirIPCProtocol.version,
         id: String,
         kind: IPCRequestKind,
         authorizationToken: String? = nil,
         payload: Payload
     ) {
-        self.version = version
         self.id = id
         self.kind = kind
         self.authorizationToken = authorizationToken
@@ -1900,7 +1892,6 @@ public struct IPCRequest: Codable, Equatable, Sendable {
 
     public func authorizing(with token: String?) -> IPCRequest {
         IPCRequest(
-            version: version,
             id: id,
             kind: kind,
             authorizationToken: token,
@@ -1909,7 +1900,6 @@ public struct IPCRequest: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version
         case id
         case kind
         case authorizationToken = "authorizationToken"
@@ -1918,7 +1908,6 @@ public struct IPCRequest: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        version = try container.decode(Int.self, forKey: .version)
         id = try container.decode(String.self, forKey: .id)
         kind = try container.decode(IPCRequestKind.self, forKey: .kind)
         authorizationToken = try container.decodeIfPresent(String.self, forKey: .authorizationToken)
@@ -1944,7 +1933,6 @@ public struct IPCRequest: Codable, Equatable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(version, forKey: .version)
         try container.encode(id, forKey: .id)
         try container.encode(kind, forKey: .kind)
         try container.encodeIfPresent(authorizationToken, forKey: .authorizationToken)
@@ -1999,11 +1987,9 @@ public struct IPCPingResult: Codable, Equatable, Sendable {
 }
 
 public struct IPCVersionResult: Codable, Equatable, Sendable {
-    public let protocolVersion: Int
     public let appVersion: String?
 
-    public init(protocolVersion: Int = NehirIPCProtocol.version, appVersion: String?) {
-        self.protocolVersion = protocolVersion
+    public init(appVersion: String?) {
         self.appVersion = appVersion
     }
 }
@@ -2499,7 +2485,6 @@ public struct IPCSubscriptionsQueryResult: Codable, Equatable, Sendable {
 }
 
 public struct IPCCapabilitiesQueryResult: Codable, Equatable, Sendable {
-    public let protocolVersion: Int
     public let appVersion: String?
     public let authorizationRequired: Bool
     public let windowIdScope: String
@@ -2511,7 +2496,6 @@ public struct IPCCapabilitiesQueryResult: Codable, Equatable, Sendable {
     public let subscriptions: [IPCSubscriptionDescriptor]
 
     public init(
-        protocolVersion: Int = NehirIPCProtocol.version,
         appVersion: String?,
         authorizationRequired: Bool,
         windowIdScope: String,
@@ -2522,7 +2506,6 @@ public struct IPCCapabilitiesQueryResult: Codable, Equatable, Sendable {
         windowActions: [IPCWindowActionDescriptor],
         subscriptions: [IPCSubscriptionDescriptor]
     ) {
-        self.protocolVersion = protocolVersion
         self.appVersion = appVersion
         self.authorizationRequired = authorizationRequired
         self.windowIdScope = windowIdScope
@@ -2826,7 +2809,6 @@ public struct IPCResult: Codable, Equatable, Sendable {
 }
 
 public struct IPCResponse: Codable, Equatable, Sendable {
-    public let version: Int
     public let id: String
     public let kind: IPCResponseKind
     public let ok: Bool
@@ -2835,7 +2817,6 @@ public struct IPCResponse: Codable, Equatable, Sendable {
     public let result: IPCResult?
 
     public init(
-        version: Int = NehirIPCProtocol.version,
         id: String,
         kind: IPCResponseKind,
         ok: Bool,
@@ -2843,7 +2824,6 @@ public struct IPCResponse: Codable, Equatable, Sendable {
         code: IPCErrorCode? = nil,
         result: IPCResult? = nil
     ) {
-        self.version = version
         self.id = id
         self.kind = kind
         self.ok = ok
@@ -2873,7 +2853,6 @@ public struct IPCResponse: Codable, Equatable, Sendable {
 }
 
 public struct IPCEventEnvelope: Codable, Equatable, Sendable {
-    public let version: Int
     public let id: String
     public let kind: IPCEventKind
     public let channel: IPCSubscriptionChannel
@@ -2883,7 +2862,6 @@ public struct IPCEventEnvelope: Codable, Equatable, Sendable {
     public let result: IPCResult
 
     public init(
-        version: Int = NehirIPCProtocol.version,
         id: String,
         kind: IPCEventKind = .event,
         channel: IPCSubscriptionChannel,
@@ -2892,7 +2870,6 @@ public struct IPCEventEnvelope: Codable, Equatable, Sendable {
         code: IPCErrorCode? = nil,
         result: IPCResult
     ) {
-        self.version = version
         self.id = id
         self.kind = kind
         self.channel = channel
@@ -2918,7 +2895,6 @@ public struct IPCEventEnvelope: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version
         case id
         case kind
         case channel
@@ -2930,7 +2906,6 @@ public struct IPCEventEnvelope: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        version = try container.decode(Int.self, forKey: .version)
         id = try container.decode(String.self, forKey: .id)
         kind = try container.decode(IPCEventKind.self, forKey: .kind)
         channel = try container.decode(IPCSubscriptionChannel.self, forKey: .channel)
@@ -2942,7 +2917,6 @@ public struct IPCEventEnvelope: Codable, Equatable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(version, forKey: .version)
         try container.encode(id, forKey: .id)
         try container.encode(kind, forKey: .kind)
         try container.encode(channel, forKey: .channel)
