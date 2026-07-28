@@ -185,71 +185,101 @@ Two independent sub-defects compound it:
    restore it exists to correct (Capture A), and when it does fire, nothing
    retracts the loser's already-queued work (Capture D's request 336).
 
-## Repair direction: the overlay session as a viewport transaction
+## Repair direction: freeze at close-detect, arbitrate once (chosen 2026-07-28)
 
-Model the episode explicitly. Boundaries are already observable:
+An earlier draft of this section proposed freezing Nehir-ordered viewport
+motion for the whole overlay session (from overlay-frontmost to destroy).
+The user rejected that scope: while the overlay is up, everything must behave
+as today — the insertion relayout scroll to a Cmd+N window, user commands and
+swipes all stay live. The freeze applies only to the **close handoff**.
 
-- **Open:** a recognized overlay window of an overlay-capable pid becomes
-  frontmost (`recognizedOverlayWindowIdsByPid`, `overlayCapablePids` —
-  `AXEventHandler.swift:955-961`, `:3218-3235`).
-- **Close:** `AXUIElementDestroyed` of that overlay window, plus settle of
-  the anchor assert's own confirmation echoes.
+That works because the close has an observable early edge. In all four
+captures the first close event is not the overlay's destroy but the owner's
+cause-less restore: an external activation of a *different* pid with
+`self_fronting_age_ms=nil` and `requestDisposition=unrelatedNoRequest`,
+arriving while a recognized overlay window of an overlay-capable pid is
+visible and frontmost. The destroy follows 60–300 ms later. Arming on the
+destroy itself would be too late — Capture A's harmful
+`follow_parked → activateWorkspace` started ~60 ms before the destroy
+arrived.
 
-Within the episode:
+The mechanism, an application of the existing defer-until-resolving-event
+pattern (`deferredSameAppActiveNativeActivationTokens`,
+`AXEventHandler.swift:3599-3613`, 120 ms replay) to the cross-app overlay
+handoff:
 
-1. **Freeze programmatic viewport motion.** Insertion relayout scroll,
-   parked-follow workspace activation, `activateWorkspace` scrolls and
-   confirm-pass reveals are all deferred or dropped. User-initiated gestures
-   remain live — the freeze applies to Nehir-ordered motion only. A window
-   created during the episode is inserted into the strip without scrolling to
-   it (it is under the overlay anyway).
-2. **One arbitration at close.** Selection and `wmCommandTarget` go to the
-   anchor (the shipped explicit-stamp logic already picks the right token in
-   every capture). Deferred motion orders from the episode are discarded, not
-   replayed.
-3. **At most one minimal reveal.** If — and only if — the anchor's column is
-   not visible in the frozen viewport, run a single reveal with a
-   minimal-displacement snap (nearest edge, never a farther "style" snap).
-   If it is visible (Capture B's right-edge-pinned terminal), zero motion.
-4. **Retraction.** Winning the arbitration must cancel the losers' queued
-   requests (the Capture D `activateWorkspace` follow-up), not merely race
-   them.
+1. **Arm** on the cause-less external activation while a recognized overlay
+   of an overlay-capable pid is visible. Defer the activation's downstream
+   processing — parked-follow, `activateWorkspace`, confirm-pass reveal —
+   instead of executing it.
+2. **Resolve on overlay destroy** (this was the terminal hiding): discard the
+   deferred work entirely; the anchor assert
+   (`assertManagedAnchorAfterOverlayClose`, `AXEventHandler.swift:6616`)
+   runs without a competing `activeFocusRequestToken` and lands selection,
+   `wmCommandTarget` and focus on the stamped token. Because the insertion
+   scroll already ran under the overlay, the anchor column is normally
+   visible → zero motion at close.
+3. **Resolve on timeout** (~200–300 ms, no destroy): this was a genuine
+   click/Cmd-Tab to another app; replay the deferred activation exactly as
+   today. Cost: an imperceptible delay on a real app switch that happens to
+   race an open overlay.
+4. **Retraction stays required**: arming must also prevent (or resolution
+   must cancel) queued follow-ups from the deferred activation — Capture D's
+   surviving `activateWorkspace` request is the counterexample.
+
+Expected outcome per capture: A and D — the restore is deferred and
+discarded, the anchor wins uncontested, zero close motion, no split-brain;
+B and C — the browser-restore round-trip disappears, leaving only the
+under-overlay insertion scroll.
 
 Independently of the episode mechanism, the insertion relayout scroll should
 adopt minimal-displacement targeting in general — Capture B shows it moving a
 full column width when the inserted column was already flush with the right
-screen edge.
+screen edge. That is a separate, smaller fix.
 
-### Open product decision
+### Product decision (resolved)
 
-Rule 2 of the invariant ("overlay close moves nothing") conflicts with rule 3
-("commands act on what the user sees") exactly when the anchor column ends the
-episode outside the frozen viewport. The direction above resolves it with one
-minimal reveal, treating "focused and selected but invisible" as the worse
-outcome (per Capture D). If strict zero motion is preferred instead, the
-arbitration would have to hand selection to the anchor while leaving the
-viewport untouched — accepting an off-screen command target by design. This
-choice gates the plan and needs an explicit call.
+Because the insertion scroll still runs under the overlay, the anchor column
+is normally already visible when the overlay closes, so "zero motion at
+close" and "commands act on what the user sees" coincide in the standard
+Cmd+N flow. The residual case — the user manually scrolled away from the
+anchor during the overlay session — is resolved in favour of **zero motion**:
+the user just expressed a viewport preference, and snapping back would be the
+churn this work removes. The anchor still takes selection and focus;
+[`20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md`](20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md)'s
+scroll-away contract already covers this shape. The no-new-window control
+(open and hide without Cmd+N) is strict zero motion throughout.
 
 ## Validation requirements
 
 A validating capture of the full repro (overlay open → Cmd+N → overlay hide)
-must show, for the whole episode:
+must show:
 
-1. no `scroll_animation_start` between overlay open and overlay destroy whose
-   source is Nehir-ordered (insertion relayout, activateWorkspace,
-   parked-follow);
-2. exactly one `overlay_close_anchor_asserted` after the destroy, with no
+1. under the overlay, behaviour unchanged from today: the insertion scroll to
+   the Cmd+N column runs, and user commands/gestures act normally;
+2. the cause-less restore is deferred, not processed: no
+   `follow_focus_to_parked_window … decision=switch` and no
+   `pending_focus_started … reason=activateWorkspace` for the restored app
+   between the restore activation and the overlay destroy;
+3. exactly one `overlay_close_anchor_asserted` after the destroy, with no
    competing `pending_focus_started` surviving it;
-3. at most one post-close scroll, and only when the anchor column was not
-   visible; its displacement must be the minimal snap distance;
-4. final `wmCommandTarget`, layout selection and confirmed focus all equal to
-   the anchor token; and
-5. a subsequent resize command applying to the anchor's column while that
-   column is on-screen.
+4. zero Nehir-ordered viewport motion from the restore activation to episode
+   settle (the anchor column is already visible from the insertion scroll);
+5. final `wmCommandTarget`, layout selection and confirmed focus all equal to
+   the anchor token, and a subsequent resize command applying to the anchor's
+   on-screen column.
 
-The no-new-window control (open and hide the overlay without Cmd+N) must show
-zero viewport motion and zero focus-request churn for the entire episode.
+Controls:
+
+- **No new window** (open and hide without Cmd+N): zero viewport motion and
+  zero focus-request churn for the entire episode; the deferred restore is
+  discarded and the anchor no-ops on the preserved pre-overlay token.
+- **Genuine app switch racing an overlay**: click/Cmd-Tab to another app
+  while the overlay is visible and no destroy follows — the deferred
+  activation must replay after the timeout and produce today's exact
+  behaviour (confirmation, reveal, workspace activation as applicable).
+- **Manual scroll-away during overlay, then close**: viewport stays where the
+  user put it; the anchor takes selection/focus without a snap-back reveal.
 
 ## Relationships
 
