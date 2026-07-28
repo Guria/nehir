@@ -11,6 +11,7 @@ This document covers the Nehir automation surface. For the docs hub, see [Docume
 - [Architecture](#architecture)
 - [Installation](#installation)
 - [IPC Protocol](#ipc-protocol)
+  - [Stability](#stability)
   - [Socket & Authorization](#socket--authorization)
   - [Wire Format](#wire-format)
   - [Security Model](#security-model)
@@ -172,7 +173,17 @@ Enabling IPC starts the server immediately and creates the Unix domain socket pl
 
 ## IPC Protocol
 
-**Protocol version:** 6
+### Stability
+
+**The IPC protocol and the `nehirctl` output format are unstable.** Fields, kinds, error codes, and command names can be added, renamed, or removed in any release, including without a deprecation period.
+
+There is no protocol version number to negotiate against. The only version an integration can key on is the Nehir app version, available from the `version` command and the `capabilities` query as `appVersion`:
+
+```
+nehirctl version --json
+```
+
+Pin integrations to a Nehir version you have tested, and re-check them when you upgrade.
 
 ### Socket & Authorization
 
@@ -224,7 +235,7 @@ nehirctl <command> [arguments...] [--format json|table|tsv|text] [--json]
 | Command | Type | Description |
 |---------|------|-------------|
 | `ping` | remote | Verify IPC reachability and return `pong` |
-| `version` | remote | Return the Nehir app version and IPC protocol version |
+| `version` | remote | Return the Nehir app version |
 | `command` | remote | Execute window manager commands through the IPC command surface |
 | `query` | remote | Query Nehir state, registries, and protocol capabilities |
 | `rule` | remote | Manage persisted window rules and reapply them to windows |
@@ -789,7 +800,6 @@ Completions are context-aware: query names, selectors, field names, command path
 
 ```json
 {
-  "version": 6,
   "id": "<uuid>",
   "kind": "<ping|version|command|query|rule|workspace|window|subscribe>",
   "authorizationToken": "<token>",
@@ -863,7 +873,6 @@ Completions are context-aware: query names, selectors, field names, command path
 
 ```json
 {
-  "version": 6,
   "id": "<request-id>",
   "ok": true,
   "kind": "<ping|version|command|query|rule|workspace|window|subscribe>",
@@ -876,11 +885,10 @@ Completions are context-aware: query names, selectors, field names, command path
 }
 ```
 
-Authorization, protocol, validation, and routing failures keep the originating response `kind`. For example:
+Authorization, validation, and routing failures keep the originating response `kind`. For example:
 
 ```json
 {
-  "version": 6,
   "id": "<request-id>",
   "ok": false,
   "kind": "query",
@@ -897,7 +905,6 @@ Events are sent on subscription connections after the initial response.
 
 ```json
 {
-  "version": 6,
   "id": "<event-id>",
   "kind": "event",
   "channel": "focus",
@@ -938,7 +945,6 @@ This envelope is produced locally by the CLI, so it does not include IPC fields 
 | `invalid_request` | Malformed, oversized, or unparseable request |
 | `invalid_arguments` | Bad arguments for the command/rule |
 | `invalid_state` | Command is well-formed but not valid in the current runtime state |
-| `protocol_mismatch` | Client/server protocol version mismatch |
 | `ignored_disabled` | Window manager is disabled |
 | `ignored_overview` | Overview surface is open |
 | `unauthorized` | Missing or invalid authorization token |

@@ -28,7 +28,7 @@ final class IPCQueryRouter {
     }
 
     func versionResult() -> IPCVersionResult {
-        IPCVersionResult(protocolVersion: NehirIPCProtocol.version, appVersion: appVersion)
+        IPCVersionResult(appVersion: appVersion)
     }
 
     func workspaceBarResult() -> IPCWorkspaceBarQueryResult {
@@ -244,7 +244,6 @@ final class IPCQueryRouter {
 
     func capabilitiesResult() -> IPCCapabilitiesQueryResult {
         IPCCapabilitiesQueryResult(
-            protocolVersion: NehirIPCProtocol.version,
             appVersion: appVersion,
             authorizationRequired: true,
             windowIdScope: "session",

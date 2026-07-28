@@ -79,9 +79,6 @@ private func assertRoundTrip<T: Codable & Equatable>(_ value: T) throws {
     }
 
     @Test func publicDTOsRoundTripThroughJSON() throws {
-        #expect(NehirIPCProtocol.version == 6)
-        #expect(IPCErrorCode.protocolMismatch.rawValue == "protocol_mismatch")
-
         try assertRoundTrip(
             IPCWorkspaceRef(id: "ws-1", rawName: "1", displayName: "Main", number: 1)
         )
@@ -404,10 +401,10 @@ private func assertRoundTrip<T: Codable & Equatable>(_ value: T) throws {
         )
         try assertRoundTrip(
             IPCResponse.failure(
-                id: "protocol-mismatch",
+                id: "invalid-request",
                 kind: .query,
-                code: .protocolMismatch,
-                result: IPCResult(version: IPCVersionResult(protocolVersion: 3, appVersion: "1.2.3"))
+                code: .invalidRequest,
+                result: IPCResult(version: IPCVersionResult(appVersion: "1.2.3"))
             )
         )
     }
