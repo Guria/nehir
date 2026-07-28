@@ -180,6 +180,13 @@ Because the symptom cannot be produced, the fix cannot be validated by its
 intended effect. The only check available is a negative one: run a build with the
 port and the same three web apps and confirm nothing regresses.
 
+Review of this path also exposed a separate, confirmed observability gap: all
+four fallible steps in the private focus sequence lose their `OSStatus`, so a
+runtime capture cannot say whether process lookup, front-process selection,
+mouse-down posting or mouse-up posting failed. That follow-up is intentionally
+separate from this hardening port; see
+[`20260728-private-api-focus-statuses-are-silently-discarded.md`](20260728-private-api-focus-statuses-are-silently-discarded.md).
+
 ## Consequence for the sweep record
 
 In [`20260728-upstream-post-roadmap-candidates.md`](20260728-upstream-post-roadmap-candidates.md),
