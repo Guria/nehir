@@ -4,6 +4,15 @@
 **Status:** Completed; fixed on `main` by `c6eaafb9` (2026-07-08).
 **Area:** Niri viewport reveal on AX focus confirm.
 
+**Partly superseded (2026-07-28) by `ff6b7043..a08f35a3`** — see
+[`20260728-scroll-lock-leaves-focused-window-offscreen.md`](20260728-scroll-lock-leaves-focused-window-offscreen.md).
+The clause below reserving reveals-while-locked for explicit navigation no longer
+holds: scroll lock now keys on target visibility rather than trigger, so a
+clipped target is left alone for **every** trigger and a parked one is revealed
+for every trigger. `RevealTrigger.respectsScrollLock`, introduced by the work
+recorded here, has been removed. What survives is the fully-visible half:
+automatic focus confirmation still may not re-centre an already visible column.
+
 **Final state:** `c6eaafb9` keeps automatic focus confirmation from moving
 an already fully visible column, even when scroll lock is off, and makes the
 fully-visible arm honor scroll lock for automatic triggers. Explicit navigation

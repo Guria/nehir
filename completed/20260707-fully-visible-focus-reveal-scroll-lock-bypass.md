@@ -2,7 +2,7 @@
 
 Originally verified against main `d953d4d3` on 2026-07-07; final shipped state verified against `main` at `c6eaafb9` on 2026-07-08.
 
-**Status:** completed; merged to `main` as `c6eaafb9` (`Keep the viewport still when focusing an already visible window`).
+**Status:** completed; merged to `main` as `c6eaafb9` (`Keep the viewport still when focusing an already visible window`). **Partly superseded on 2026-07-28** by `ff6b7043..a08f35a3` — see [`20260728-scroll-lock-leaves-focused-window-offscreen.md`](20260728-scroll-lock-leaves-focused-window-offscreen.md). The "Desired behavior" clause below that lets explicit navigation keep revealing while locked no longer holds: scroll lock now keys on target visibility, so a clipped target stays put for every trigger and a parked one is revealed for every trigger. The `allowFullyVisibleAutomaticRecenter` escape hatch shipped here survives; `RevealTrigger.respectsScrollLock` does not.
 **Symptom:** Clicking into a window that is already fully visible scrolls the
 viewport to that column's center snap — even with viewport scroll lock enabled.
 With two visible windows, alternating clicks makes the viewport ping-pong

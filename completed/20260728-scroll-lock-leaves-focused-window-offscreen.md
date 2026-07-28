@@ -1,22 +1,35 @@
-# Scroll lock suppresses explicit hotkey focus reveals (pure-layout bridge dispatch defaults to `.automatic`)
+# Scroll lock leaves a focused window entirely off-screen
 
-Status: discovery — root cause confirmed in source; fix candidate identified.
+**Status:** completed; shipped on `main` as `ff6b7043..a08f35a3` (2026-07-28),
+four commits, no merge commit.
+
+**Final shipped state:** viewport scroll lock answers to **target visibility**,
+not to reveal provenance. On a locked workspace exactly one case moves the
+viewport — a `.parked` target, i.e. one entirely outside the viewport — and it
+moves for every trigger. `.clipped` and `.fullyVisible` targets are left alone
+for every trigger. Unlocked behaviour is unchanged.
+
+This is **broader than the fix candidates recorded below**, and the difference
+matters when reading the rest of this document: validation with the user
+overturned two of its premises. See "How validation changed the conclusion".
 
 ## Symptom
 
-With Viewport Scroll Lock enabled on a workspace, pressing a directional focus
-hotkey (focus left/right) onto a clipped or parked column changes the selection
-but **never scrolls the viewport to reveal the target**. The focused window
-stays partially or fully off-screen.
+With Viewport Scroll Lock enabled on a workspace, focusing a window whose column
+sits **entirely outside the viewport** changes the selection but never scrolls
+the viewport to reveal it. The window takes focus while staying invisible, and
+keyboard input disappears into it.
 
-This contradicts the documented contract (`docs/viewport-navigation-spec.md`,
-"Viewport Scroll Lock" section):
+The original framing of this document also treated a **clipped** target as part
+of the defect, quoting `docs/viewport-navigation-spec.md`:
 
 > Viewport Scroll Lock is a per-workspace runtime toggle. When enabled, it
 > suppresses **background automatic reveals only**. Explicit user navigation
 > (workspace-bar window clicks and focus commands) … keep working.
 
-Explicit focus commands are supposed to reveal while locked. They do not.
+That reading did not survive validation. A partially visible target is one the
+user can already see, and dragging it to a snap is the churn the lock exists to
+stop — so the clipped half of the original symptom is now expected behaviour.
 
 ## Runtime evidence
 
@@ -60,7 +73,12 @@ reveal on a workspace observed with `locked=false`
 confirming the reveal machinery itself works and the suppression is
 lock-specific.
 
-## Root cause (confirmed in source)
+## Root cause (confirmed in source, pre-fix code)
+
+The plumbing described in this section is accurate for the code as it stood
+before `ff6b7043`. The defaults it relies on no longer exist — see
+"What shipped".
+
 
 There are **two reveal entry points** for a focus change, with different
 trigger policies:
@@ -195,9 +213,119 @@ sites in `NiriNavigation.swift` (`:103, :306, :331, :419, :558, :589, :654,
 ## Verification notes
 
 - Source citations verified against the main Nehir source tree on 2026-07-28.
-- Existing regression coverage: `Tests/NehirTests/ViewportSnapContextTests.swift`
-  exercises `isScrollLocked` with `scrollToReveal` directly, but no test covers
+- Pre-fix regression coverage: `Tests/NehirTests/ViewportSnapContextTests.swift`
+  exercised `isScrollLocked` with `scrollToReveal` directly, but no test covered
   the trigger plumbing from a focus command through the pure-layout bridge, and
-  none covers the AX focus-confirm call site.
-- Per repo testing rules, tests are written only after the user confirms the
+  none covered the AX focus-confirm call site.
+- Per repo testing rules, tests were written only after the user confirmed the
   fix in their real repro.
+
+## How validation changed the conclusion
+
+Two premises of the analysis above did not survive the user's review.
+
+**1. A clipped target must not be revealed while locked — at any visible
+fraction.** The document treated the first capture as the defect, but its target
+was `clipped`, not parked: two 1316 px columns on a ≈2028 px viewport at
+`viewStart=-6.0` left roughly 700 px of column 1 visible, about 53%. The user's
+position is that scroll lock exists precisely to stop the viewport being dragged
+to a snap for a column that is already partly on screen, and that this holds even
+at 5% visible. So that capture documents expected behaviour, and the fix
+candidates below would have made it worse rather than better.
+
+**2. Provenance is the wrong axis.** A second capture, on a workspace with five
+1011 px columns at `viewStart=1011.0` and scroll lock on, switched between
+windows of one browser through that app's own Window menu:
+
+```text
+reason=ax_focus_confirm_reveal_candidate columnIndex=4 revealStyle=auto
+  locked=true visibility=parked(Nehir.AxisHideEdge.maximum)
+  viewStart=1011.0 closest=3045.0:rightEdge closestFills=true
+  center=3553.5:center snapCount=3
+
+reason=ax_focus_confirm_reveal_result columnIndex=4 isFFM=false didReveal=false
+```
+
+The target column sat at `x=4068.0`, entirely outside the viewport, with usable
+snap candidates and `isFFM=false` — and nothing moved. That focus arrives through
+AX focus confirmation, so it carries `.automatic` no matter how deliberate the
+user's action was. Any rule keyed on provenance strands it. The same capture also
+showed two `fullyVisible` targets correctly returning `didReveal=false`.
+
+Together these inverted the policy: what decides a locked viewport is whether the
+user can see the target at all, not who asked.
+
+## What shipped
+
+`ff6b7043` — the reveal policy. The two per-branch
+`guard !trigger.respectsScrollLock || !state.isScrollLocked` checks in
+`scrollToReveal` are replaced by a single gate evaluated once the target's
+visibility is known:
+
+```swift
+if state.isScrollLocked {
+    guard case .parked = visibility else { return false }
+}
+```
+
+`RevealTrigger.respectsScrollLock` is deleted with them; it no longer decided
+anything. `RevealTrigger` survives and still governs one narrower question —
+whether an already fully visible **non-filling** column may be re-centred
+(`.explicitNavigation`, or `.automatic` with
+`allowFullyVisibleAutomaticRecenter`, and only when `revealStyle == .auto`).
+Re-centring a fully visible column that *fills* the viewport is viewport
+maintenance and runs for either trigger.
+
+Fix candidate 1 below shipped as part of this commit —
+`pureLayoutFocusTarget` now passes `revealTrigger: .explicitNavigation` — but it
+is no longer what repairs the reported behaviour. Under the visibility rule the
+bridge's trigger only affects fully-visible re-centring.
+
+Fix candidate 2 (a token-keyed provenance latch for the AX confirm path) was
+**not** implemented and is no longer needed: the confirm path reveals a parked
+target on its own now that provenance is out of the decision.
+
+`1a1aec68` — removes the `= .automatic` default from `ensureSelectionVisible`,
+`scrollToReveal` and `ensureColumnVisible`. The default was the mechanism by
+which this bug entered: the bridge simply omitted the argument. Fifteen
+background call sites now pass `.automatic` explicitly; omitting it is a compile
+error. Regression coverage lands in `Tests/NehirTests/ScrollLockRevealPolicyTests.swift`
+and `Tests/NehirTests/ScrollLockFocusCommandRevealTests.swift`.
+
+Two pre-existing tests encoded the replaced contract and were rewritten rather
+than adapted: `ViewportSnapContextTests.scrollToRevealSkipsWhenLocked` (asserted
+a parked target stays hidden while locked) was deleted in favour of the new
+per-behavior coverage, and the IPC router's
+`windowFocusBypassesViewportScrollLockForExplicitNavigation` — whose target
+window landed in the clipped column at that fixture's geometry — now asserts the
+viewport holds still, with a sibling test covering the parked case.
+
+`4bafe3ca` and `a08f35a3` are follow-ups: formatting and provenance
+registration, then moving the IPC scroll-lock tests into their per-behavior file.
+
+Changeset: `patch`. No ticket number; none existed for this work.
+
+## Follow-ups
+
+- [`20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md`](../discovery/20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md)
+  — `AXEventHandler` skips the reveal call entirely when `preserveActiveViewport`
+  is set, which sits above the engine and therefore above the policy shipped
+  here. In the second capture the parked target's first confirm pass ran with
+  `preserve=none` and was killed by the old lock guard, while a later duplicate
+  pass was skipped with `preserveActiveViewportReason=already_confirmed_focused_window_changed`;
+  an ordering where only preserve-branch passes occur would strand the window
+  again.
+- [`20260728-action-catalog-binding-literals-are-not-shipped-defaults.md`](../discovery/20260728-action-catalog-binding-literals-are-not-shipped-defaults.md)
+  — surfaced while tracing which hotkey reaches this path.
+
+## Known documentation drift
+
+`docs/viewport-navigation-spec.md` on `main` still describes the replaced
+contract and now contradicts shipped behaviour in two places: the "Reveal on
+Focus" table row *"Explicit user navigation with a clipped or parked target →
+Yes, using Reveal Style"*, and the "Viewport Scroll Lock" paragraph stating the
+lock *"suppresses background automatic reveals only"* while explicit user
+navigation *"keeps working"*. Both now overstate what a locked workspace does.
+The same table's *"Target already fully visible → Never"* row was already stale
+before this change, since `c6eaafb9` allows explicit navigation to re-centre a
+fully visible column. Updating that spec is outstanding.
