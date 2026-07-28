@@ -23,25 +23,35 @@ Tests are gated in CI (`.github/workflows/ci.yml`, `mise run test` on
 The suite uses **Swift Testing** (`import Testing`), not XCTest. New tests use
 Swift Testing.
 
-## When to write tests
+## When to work on tests
 
-**Do not add, modify, rewrite, or delete tests until the user has confirmed the
-implementation or fix works in their real repro.** This applies to all work —
-new features, refactors, and bug fixes alike. The trigger is *unconfirmed
-behavior*, not *bug vs feature*: "this is a new feature, not a bug fix" is
-explicitly **not** an exception, and reverting or removing existing tests counts
-as editing them.
+**Defer all test work to the latest stage of the task.** Do not add, modify,
+rewrite, delete, move, compile, or run tests until at least one unlock condition
+is true:
 
-A plan, spec, or delegated task that includes a "write tests" step does **not**
-authorize writing tests before runtime confirmation. The runtime-confirmation
-gate overrides any plan's test phase; when they conflict, wait for the user's
-confirmation.
+1. The user confirms the implementation or fix works in their real repro.
+2. The user explicitly asks for test work in their feedback.
 
-The underlying principle: the user's real-repro validation is the acceptance
-signal. Runtime traces and that validation are what confirm the behavior; tests
-written before it waste effort and create churn. After confirmation, add a
-regression test if requested or clearly useful. This makes the suite a curated
-record of real, confirmed repros.
+This is a sequencing rule, not a preservation rule. Existing tests do not decide
+what behavior Nehir should keep; they may encode the wrong contract and may need
+to be rewritten or deleted after the gate unlocks. The rule delays that work so
+it happens after the intended runtime behavior is known.
+
+The gate applies to new features, refactors, and bug fixes alike. "This is a new
+feature", "this is only a refactor", "I am only running tests", and "the current
+test is wrong" are not exceptions. Reverting or removing a test counts as test
+work.
+
+A plan, spec, or delegated task that includes a test phase does **not** unlock
+the gate. If neither unlock condition has occurred, defer that phase. Once the
+gate unlocks, perform only the test work authorized by the confirmed behavior or
+the user's request.
+
+The underlying principle: the user's runtime feedback defines the intended
+behavior before tests record it. Writing or running tests earlier spends effort
+on an experimental result and creates churn. After unlock, use the suite to
+record the confirmed contract, including rewriting or deleting assertions that
+encode a different one.
 
 ## Where new tests go
 

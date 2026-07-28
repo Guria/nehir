@@ -27,9 +27,11 @@ dist/
 # External frameworks (downloaded/built separately)
 Frameworks/
 
-# Codex
+# Agent-local state
 .codex-home/
-.claude/
+.claude/settings.json
+.claude/settings.local.json
+.claude/worktrees/
 .tmp/
 .cache/
 .codex-cache/
