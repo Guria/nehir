@@ -4860,7 +4860,7 @@ final class AXEventHandler: CGSEventDelegate {
                     motion: controller.motionPolicy.snapshot(),
                     scale: engine.displayScale(in: wsId),
                     allowFullyVisibleAutomaticRecenter: false,
-                trigger: .automatic
+                    trigger: .automatic
                 )
                 controller.diagnostics.recordRuntimeViewportTrace(
                     workspaceId: wsId,

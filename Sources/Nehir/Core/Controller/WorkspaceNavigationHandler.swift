@@ -122,7 +122,7 @@ final class WorkspaceNavigationHandler {
                     state: &targetState,
                     workingFrame: workingFrame,
                     gaps: gap,
-                revealTrigger: .automatic
+                    revealTrigger: .automatic
                 )
             }
         }

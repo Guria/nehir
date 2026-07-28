@@ -267,7 +267,7 @@ extension NiriLayoutEngine {
                 state: &state,
                 workingFrame: workingFrame,
                 gaps: gaps,
-            revealTrigger: .automatic
+                revealTrigger: .automatic
             )
         }
 
