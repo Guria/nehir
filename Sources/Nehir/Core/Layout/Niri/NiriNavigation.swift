@@ -182,7 +182,7 @@ extension NiriLayoutEngine {
         animationConfig: SpringConfig? = nil,
         fromContainerIndex: Int? = nil,
         previousActiveContainerPosition: CGFloat? = nil,
-        revealTrigger: RevealTrigger = .automatic
+        revealTrigger: RevealTrigger
     ) {
         let containers = columns(in: workspaceId)
         guard !containers.isEmpty else { return }

@@ -866,7 +866,8 @@ enum NiriWindowMoveResult {
                 state: &state,
                 workingFrame: pass.insetFrame,
                 gaps: pass.gap,
-                fromContainerIndex: removal.removalResult.fromIndexForVisibility
+                fromContainerIndex: removal.removalResult.fromIndexForVisibility,
+            revealTrigger: .automatic
             )
             if abs(state.viewOffsetPixels.current() - offsetBefore) > 1 {
                 viewportNeedsRecalc = true
@@ -1011,7 +1012,8 @@ enum NiriWindowMoveResult {
                     state: &state,
                     workingFrame: pass.insetFrame,
                     gaps: pass.gap,
-                    fromContainerIndex: state.activeColumnIndex
+                    fromContainerIndex: state.activeColumnIndex,
+                revealTrigger: .automatic
                 )
 
                 if shouldRestorePrevOffset {
@@ -1433,7 +1435,8 @@ enum NiriWindowMoveResult {
                 motion: controller.motionPolicy.snapshot(),
                 state: &state,
                 workingFrame: controller.insetWorkingFrame(for: monitor),
-                gaps: gap
+                gaps: gap,
+            revealTrigger: .automatic
             )
         }
         activateNode(
@@ -1485,7 +1488,8 @@ enum NiriWindowMoveResult {
                         motion: controller.motionPolicy.snapshot(),
                         state: &state,
                         workingFrame: controller.insetWorkingFrame(for: monitor),
-                        gaps: controller.gapSize(for: monitor)
+                        gaps: controller.gapSize(for: monitor),
+                    revealTrigger: .automatic
                     )
                 }
                 activateNode(
@@ -2219,7 +2223,8 @@ enum NiriWindowMoveResult {
                 motion: controller.motionPolicy.snapshot(),
                 state: &state,
                 workingFrame: workingFrame,
-                gaps: gap
+                gaps: gap,
+            revealTrigger: .automatic
             )
         }
 

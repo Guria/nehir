@@ -109,7 +109,7 @@ extension NiriLayoutEngine {
         scale: CGFloat = 2.0,
         animationConfig: SpringConfig? = nil,
         allowFullyVisibleAutomaticRecenter: Bool = false,
-        trigger: RevealTrigger = .automatic
+        trigger: RevealTrigger
     ) -> Bool {
         guard !isFFM else { return false }
         guard context.columns.indices.contains(columnIndex), !context.snapPoints.isEmpty else { return false }
