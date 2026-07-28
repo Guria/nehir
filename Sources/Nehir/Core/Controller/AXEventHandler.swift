@@ -314,6 +314,13 @@ struct NiriCreateFocusTraceEvent: Equatable {
     }
 }
 
+struct CursorPlacementEvidence: Equatable {
+    let appKitPoint: CGPoint?
+    let containingScreenDisplayId: CGDirectDisplayID?
+    let mappedMonitorId: Monitor.ID?
+    let monitorTopology: String
+}
+
 struct WindowCreatePlacementContext: Equatable {
     let nativeSpaceMonitorId: Monitor.ID?
     let activeFocusRequestWorkspaceId: WorkspaceDescriptor.ID?
@@ -327,6 +334,8 @@ struct WindowCreatePlacementContext: Equatable {
     /// non-managed desktop click on a display without managed windows), this reflects
     /// where the user actually is. `nil` when the pointer is over no monitor.
     let cursorMonitorId: Monitor.ID?
+    private(set) var cursorEvidence: CursorPlacementEvidence?
+    private(set) var explicitWorkspaceActivation: ExplicitWorkspacePlacementIntentSnapshot?
     let source: String
     let focusedWorkspaceSource: String?
     let recentPidWorkspaceId: WorkspaceDescriptor.ID?
@@ -342,6 +351,17 @@ extension WindowCreatePlacementContext: CustomStringConvertible {
             + "focused_monitor=\(String(describing: focusedMonitorId)) "
             + "interaction_monitor=\(String(describing: interactionMonitorId)) "
             + "cursor_monitor=\(String(describing: cursorMonitorId)) "
+            + "cursor_point=\(String(describing: cursorEvidence?.appKitPoint)) "
+            + "cursor_screen_display=\(String(describing: cursorEvidence?.containingScreenDisplayId)) "
+            + "cursor_mapped_monitor=\(String(describing: cursorEvidence?.mappedMonitorId ?? cursorMonitorId)) "
+            + "monitor_topology=\(cursorEvidence?.monitorTopology ?? "not_captured") "
+            + "explicit_activation_workspace=\(explicitWorkspaceActivation?.workspaceId.uuidString ?? "nil") "
+            + "explicit_activation_monitor=\(String(describing: explicitWorkspaceActivation?.monitorId)) "
+            + "explicit_activation_source=\(explicitWorkspaceActivation?.source ?? "nil") "
+            + "explicit_activation_age_ms=\(explicitWorkspaceActivation.map { String($0.ageMs) } ?? "nil") "
+            + "explicit_activation_generation=\(explicitWorkspaceActivation.map { String($0.generation) } ?? "nil") "
+            + "explicit_activation_valid=\(explicitWorkspaceActivation.map { String($0.isValid) } ?? "false") "
+            + "explicit_activation_rejection=\(explicitWorkspaceActivation?.rejection ?? "none") "
             + "source=\(source) "
             + "focused_workspace_source=\(focusedWorkspaceSource ?? "nil") "
             + "recent_pid_workspace=\(recentPidWorkspaceId?.uuidString ?? "nil") "
@@ -1042,7 +1062,7 @@ final class AXEventHandler: CGSEventDelegate {
     /// OS-boundary seam for the display the pointer is currently over. `nil` uses the
     /// live AppKit pointer; tests set it (e.g. to `{ nil }`) so the real cursor position
     /// never leaks into placement decisions. Faking this boundary — not the placement
-    /// algorithm — keeps production and tests on the same resolveCursorPlacementMonitorId
+    /// algorithm — keeps production and tests on the same resolveCursorPlacementEvidence
     /// path.
     var cursorDisplayIdProvider: (() -> CGDirectDisplayID?)?
     var managedReplacementTimeSourceForTests: (() -> TimeInterval)?
@@ -7432,6 +7452,7 @@ final class AXEventHandler: CGSEventDelegate {
         } else {
             nil
         }
+        let cursorEvidence = resolveCursorPlacementEvidence(controller: controller)
         return WindowCreatePlacementContext(
             nativeSpaceMonitorId: nativeSpaceMonitorId,
             activeFocusRequestWorkspaceId: controller.workspaceManager.activeFocusRequestWorkspaceId,
@@ -7441,7 +7462,9 @@ final class AXEventHandler: CGSEventDelegate {
                 controller.workspaceManager.monitorId(for: $0)
             },
             interactionMonitorId: controller.workspaceManager.interactionMonitorId,
-            cursorMonitorId: resolveCursorPlacementMonitorId(controller: controller),
+            cursorMonitorId: cursorEvidence.mappedMonitorId,
+            cursorEvidence: cursorEvidence,
+            explicitWorkspaceActivation: controller.explicitWorkspacePlacementIntentSnapshot(),
             source: source,
             focusedWorkspaceSource: focusedWorkspaceSource,
             recentPidWorkspaceId: recentPidWorkspaceId,
@@ -7456,21 +7479,36 @@ final class AXEventHandler: CGSEventDelegate {
     /// AppKit space and map it back through `displayId` — the same decision the command
     /// palette uses (`CommandPaletteController.paletteScreen`). Returns `nil` when the
     /// pointer is over no screen (no nearest-snap).
-    private func resolveCursorPlacementMonitorId(
+    private func resolveCursorPlacementEvidence(
         controller: WMController
-    ) -> Monitor.ID? {
+    ) -> CursorPlacementEvidence {
         // An installed provider is authoritative: when it returns nil the pointer is
         // over no screen, and we must not fall back to the live cursor (that would leak
         // the real pointer through a test's `{ nil }` seam). Only consult AppKit when no
-        // provider is installed at all.
+        // provider is installed at all. Provider-backed captures intentionally omit the
+        // raw point because it did not participate in their screen decision.
+        let point: CGPoint?
         let displayId: CGDirectDisplayID?
         if let cursorDisplayIdProvider {
+            point = nil
             displayId = cursorDisplayIdProvider()
         } else {
-            displayId = NSScreen.screen(containing: NSEvent.mouseLocation)?.displayId
+            let livePoint = NSEvent.mouseLocation
+            point = livePoint
+            displayId = NSScreen.screen(containing: livePoint)?.displayId
         }
-        guard let displayId else { return nil }
-        return controller.workspaceManager.monitors.first { $0.displayId == displayId }?.id
+        let mappedMonitorId = displayId.flatMap { resolvedDisplayId in
+            controller.workspaceManager.monitors.first { $0.displayId == resolvedDisplayId }?.id
+        }
+        let topology = controller.workspaceManager.monitors.map { monitor in
+            "\(monitor.id){display=\(monitor.displayId),frame=\(monitor.frame)}"
+        }.joined(separator: ",")
+        return CursorPlacementEvidence(
+            appKitPoint: point,
+            containingScreenDisplayId: displayId,
+            mappedMonitorId: mappedMonitorId,
+            monitorTopology: topology
+        )
     }
 
     private func resolveActiveFocusRequestPlacementMonitorId(

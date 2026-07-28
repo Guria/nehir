@@ -482,6 +482,11 @@ final class WindowActionHandler {
         if workspaceId != currentWsId {
             let wsName = controller.workspaceManager.descriptor(for: workspaceId)?.name ?? ""
             if let result = controller.workspaceManager.focusWorkspace(named: wsName) {
+                controller.recordExplicitWorkspacePlacementIntent(
+                    workspaceId: result.workspace.id,
+                    monitorId: result.monitor.id,
+                    source: "window_navigation_\(source.rawValue)"
+                )
                 _ = controller.workspaceManager.setInteractionMonitor(result.monitor.id)
                 controller.syncMonitorsToNiriEngine()
             }
@@ -738,6 +743,11 @@ final class WindowActionHandler {
     ) -> Bool {
         guard let controller else { return false }
 
+        controller.recordExplicitWorkspacePlacementIntent(
+            workspaceId: result.workspace.id,
+            monitorId: result.monitor.id,
+            source: "workspace_bar"
+        )
         let focusedToken = controller.resolveAndSetWorkspaceFocusToken(for: result.workspace.id)
         recordNavigationDiagnostic(
             reason: "navigate.workspace",
