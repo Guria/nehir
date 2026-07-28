@@ -1,13 +1,21 @@
 # Discovery: explicit follow/stay workspace-move commands
 
-Status: confirmed and actionable. Nehir currently encodes two valid per-action
-intentions — move and follow, or move and stay — as one command family whose
-meaning depends on global mutable state. The preferred direction is **Variant A**:
-replace that mode with explicit `Follow` and `Stay` command families, then migrate
-existing bindings to the family matching the user's saved setting.
+Status: open discovery — the product redesign (Variant A) is not yet started.
+Nehir currently encodes two valid per-action intentions — move and follow, or
+move and stay — as one command family whose meaning depends on global mutable
+state. The preferred direction is **Variant A**: replace that mode with explicit
+`Follow` and `Stay` command families, then migrate existing bindings to the
+family matching the user's saved setting.
 
-Verified against Nehir `main` at `64e0b98c` and the workspace-move focus-handoff
-candidate at `59295d55` on 2026-07-28. This document changes no source files.
+The underlying consistency bug this document leans on — only two of five
+workspace-move paths honoring `focusFollowsWindowToMonitor`, plus source-scroll
+and stale-focus-handoff defects — has shipped on `main` as `62d54e16`
+("Honor the follow-focus setting on every workspace move") on 2026-07-28. That
+fix makes the current setting-based contract honest but does not change the
+command abstraction this document argues against.
+
+Verified against Nehir `main` at `64e0b98c` on 2026-07-28, with the shipped
+focus-handoff work recorded at `62d54e16`. This document changes no source files.
 
 ## Executive conclusion
 
@@ -80,11 +88,11 @@ inside `WorkspaceNavigationHandler`
 (`Sources/Nehir/Core/Controller/WorkspaceNavigationHandler.swift:869-915,1021-1093`).
 The adjacent-window, adjacent-column, and numbered-column paths do not yet read
 it (`:694-862`); that inconsistency is the separate bug addressed by the
-workspace-move focus-handoff candidate.
+workspace-move focus-handoff fix that shipped as `62d54e16`.
 
-The candidate correctly makes the current contract consistent: all move paths
-use one `finishWorkspaceMove(...)`, stop source-monitor scroll animation, and
-recompute/validate post-layout focus. Its policy enum is already the natural
+The shipped fix (`62d54e16`) makes the current contract consistent: all move
+paths use one `finishWorkspaceMove(...)`, stop source-monitor scroll animation,
+and recompute/validate post-layout focus. Its policy enum is already the natural
 seam for the product redesign:
 
 ```swift
@@ -94,11 +102,11 @@ private enum WorkspaceMoveFocusPolicy {
 }
 ```
 
-The helper receives that policy at
-`Sources/Nehir/Core/Controller/WorkspaceNavigationHandler.swift:1009-1016` on
-the candidate, then `.configured` still reads the global setting at `:1029-1030`.
-A follow-up can preserve the helper and focus-safety work while changing the
-policy to explicit `.follow` / `.stay` values supplied by `CommandHandler`.
+The helper receives that policy in
+`Sources/Nehir/Core/Controller/WorkspaceNavigationHandler.swift`, and
+`.configured` still reads the global setting there. A follow-up can preserve the
+helper and focus-safety work while changing the policy to explicit `.follow` /
+`.stay` values supplied by `CommandHandler`.
 
 ### The command is modal even though the setting is persisted
 
@@ -189,7 +197,7 @@ non-following.
 
 - no command, config, UI, or IPC migration;
 - one preference changes all move commands;
-- the focus-handoff candidate already makes the behavior internally consistent.
+- the focus-handoff fix (`62d54e16`) already makes the behavior internally consistent.
 
 **Costs**
 
@@ -364,7 +372,7 @@ need for scripts to coordinate through shared global state.
 
 ## What the existing focus-handoff fix should preserve
 
-This product redesign must not reopen the bugs addressed by the candidate. Keep:
+This product redesign must not reopen the bugs addressed by `62d54e16`. Keep:
 
 1. one shared finish path for all move shapes;
 2. unconditional source-monitor scroll-animation stop;
@@ -415,3 +423,18 @@ physical trigger invokes it.
 The next planning step should first resolve the cross-file migration mechanism
 and exact action/TOML/IPC names. It should then split implementation by surface
 while preserving the shared move-completion helper and focus-safety invariants.
+
+## Follow-up status (2026-07-28)
+
+The setting-consistency work this discovery leans on has shipped:
+
+- `origin/main` contains `62d54e16` ("Honor the follow-focus setting on every
+  workspace move"), which routes all five workspace-move paths through one
+  `finishWorkspaceMove(...)`, stops the source-monitor scroll animation on every
+  path, and validates post-layout focus before applying it, including a
+  navigation-generation guard in `WindowActionHandler.navigateToWindowInternal`.
+  Verified against `main` via `git show --stat 62d54e16`.
+
+The product redesign itself — explicit `Follow` / `Stay` command families with
+behavior-preserving migration (Variant A) — is **not started**. This document
+remains an open discovery and is the starting point for that work.
