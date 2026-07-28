@@ -66,6 +66,39 @@ extension NiriLayoutEngine {
         return syncViewportSelectionToActiveColumn(columns: columns, state: &state)
     }
 
+    /// Scrolls the viewport so `columnIndex` is usable, and returns whether it moved.
+    ///
+    /// Whether a reveal happens depends on three inputs: who asked
+    /// (`trigger`), how visible the target already is, and whether the
+    /// workspace is scroll-locked.
+    ///
+    /// On an **unlocked** workspace:
+    ///
+    /// | Target visibility | `.automatic` | `.explicitNavigation` |
+    /// |---|---|---|
+    /// | `.parked` / `.clipped` | reveal per `revealStyle` | reveal per `revealStyle` |
+    /// | `.fullyVisible`, filling group off-centre | re-centre | re-centre |
+    /// | `.fullyVisible`, otherwise | only with `allowFullyVisibleAutomaticRecenter` and `revealStyle == .auto` | re-centre when `revealStyle == .auto` |
+    ///
+    /// On a **locked** workspace only the `.parked` row survives, and it survives for
+    /// every trigger: a target outside the viewport is revealed per `revealStyle` no
+    /// matter what moved the focus there. `.clipped` and `.fullyVisible` targets leave
+    /// the viewport alone.
+    ///
+    /// So `trigger` does not decide the lock question — visibility does. `.parked` is
+    /// the only "the user cannot see this at all" state, reached when at most
+    /// `niriViewportPreParkMargin` of the column would remain inside the viewport. A
+    /// column showing more than that is something the user can see, so pulling it to a
+    /// snap would be the churn the lock exists to stop; a column showing less is
+    /// focused invisibly, which no lock should be allowed to cause.
+    ///
+    /// Two rules sit outside all of the above:
+    ///
+    /// - Focus-follows-mouse never scrolls. `isFFM` short-circuits before
+    ///   anything else, so an FFM focus change cannot move the viewport no
+    ///   matter what the other inputs say.
+    /// - Nothing moves when the target is already at the chosen offset within
+    ///   one device pixel.
     @discardableResult
     func scrollToReveal(
         columnIndex: Int,
@@ -85,6 +118,23 @@ extension NiriLayoutEngine {
         let visibility = context.visibility(of: columnIndex, viewportOffset: viewStart, in: state)
         let pixel = 1.0 / max(scale, 1.0)
 
+        // Viewport scroll lock. A locked viewport moves for exactly one reason: the
+        // target is fully parked, i.e. outside the viewport entirely. Focus landing on
+        // something the user cannot see at all has to be revealed, or the window is
+        // focused invisibly and input disappears into it.
+        //
+        // Where that focus came from deliberately does not enter into it. A hotkey, a
+        // click, an app's own Window menu and background layout work all leave the user
+        // staring at a viewport that does not contain the focused window, so they all
+        // get the same answer.
+        //
+        // Everything else stays put: a partially visible target is left alone no matter
+        // how little of it shows, because pulling a column the user can already see over
+        // to a snap is precisely the churn the lock exists to stop.
+        if state.isScrollLocked {
+            guard case .parked = visibility else { return false }
+        }
+
         let targetSnaps = context.snapCandidates(for: columnIndex, in: state)
         let closest = targetSnaps.closest(to: viewStart)
         let center = targetSnaps.first { $0.kind == .center }
@@ -99,11 +149,10 @@ extension NiriLayoutEngine {
         let targetSnap: SnapPoint?
         switch visibility {
         case .fullyVisible:
-            guard !trigger.respectsScrollLock || !state.isScrollLocked else { return false }
             // Re-centering a fully visible filling group is viewport-position maintenance,
             // not a reveal. Keep the proportional slack / lone-column centering contract
-            // even when no hidden content needs to be revealed, while still honoring
-            // scroll lock for automatic triggers.
+            // even when no hidden content needs to be revealed. Scroll lock has already
+            // been settled above.
             if context.fillsViewport(at: viewStart, in: state) {
                 guard let centeredStart = context.centeredFillingViewportStart(
                     at: viewStart,
@@ -128,7 +177,6 @@ extension NiriLayoutEngine {
             targetSnap = autoSnap()
         case .parked,
              .clipped:
-            guard !trigger.respectsScrollLock || !state.isScrollLocked else { return false }
             targetSnap = switch revealStyle {
             case .auto:
                 autoSnap()

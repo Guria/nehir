@@ -7,15 +7,29 @@
 import AppKit
 import Foundation
 
+/// Declares where a viewport reveal came from.
+///
+/// This does **not** decide viewport scroll lock: a target outside the viewport is
+/// revealed regardless of trigger, and a partially visible one is left alone
+/// regardless of trigger. Lock is answered by visibility alone — see
+/// `scrollToReveal`.
+///
+/// What the trigger still decides is re-centring an already fully visible column,
+/// which is a placement preference rather than a reveal.
 enum RevealTrigger {
-    /// Background maintenance/layout reveals should be suppressed by viewport scroll lock.
+    /// Reveals that the user did not directly ask for: window close recovery,
+    /// new-window arrival, selection re-resolution, AX focus confirmation, and the
+    /// move/resize/consume/expel layout commands.
+    ///
+    /// Never re-centres an already fully visible non-filling column unless the call
+    /// site opts in via `allowFullyVisibleAutomaticRecenter`.
     case automatic
-    /// Direct user navigation (focus commands, workspace-bar window clicks) may reveal while locked.
+    /// Direct user navigation: the directional focus commands (`focusNeighbor`,
+    /// `focusWindowOrWorkspace`, `focusPrevious`, the column/tile focus commands),
+    /// workspace-bar window activation, and `moveColumn`.
+    ///
+    /// May re-centre an already fully visible column when `revealStyle == .auto`.
     case explicitNavigation
-
-    var respectsScrollLock: Bool {
-        self == .automatic
-    }
 }
 
 enum RevealStyle: String, CaseIterable, Codable, Identifiable {

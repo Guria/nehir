@@ -73,7 +73,8 @@ extension NiriLayoutEngine {
             state: &state,
             workingFrame: workingFrame,
             gaps: gaps,
-            orientation: orientation
+            orientation: orientation,
+            revealTrigger: .explicitNavigation
         )
 
         return .handled(target)
