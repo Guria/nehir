@@ -51,8 +51,8 @@ enum KeyWindowEventRecord {
     private static let keyWindowFlag: UInt8 = 0x10
     private static let windowIdOffset = 0x3C
     /// A finite point outside any window's content. All-`0xFF` here decodes as
-    /// NaN, which some apps (Chrome PWAs) mishandle badly enough to close the
-    /// window they were asked to focus.
+    /// NaN in both coordinates; a synthesised mouse-derived event should carry
+    /// a valid position instead.
     private static let offContentLocation = CGPoint(x: -1, y: -1)
 
     static func make(windowId: UInt32) -> [UInt8] {
