@@ -52,7 +52,7 @@ Only after that does it inspect viewport state and select a preservation reason.
 
 ### Preservation is a priority-ordered, unconditional gate
 
-The reasons are declared at `AXEventHandler.swift:37-46`; every case except `.none` returns `shouldPreserve=true`.
+The reasons are declared at `AXEventHandler.swift:37-47`; every case except `.none` returns `shouldPreserve=true`.
 
 The selection at `AXEventHandler.swift:4753-4765` is priority ordered:
 
@@ -236,13 +236,13 @@ It also disproves a deduplication-only repair: there was no duplicate for `.alre
 
 ### A genuine in-flight spring is intentionally preserved
 
-`Tests/NehirTests/AXEventHandlerTests.swift:1007-1105` constructs a real, unconverged spring, confirms focus on a different column, and asserts that the spring remains active and its visual trajectory is preserved. The test verifies bookkeeping and confirmed focus, but it does not assert that the newly confirmed target is visible at the spring destination.
+`Tests/NehirTests/AXEventHandlerTests.swift:1007-1106` constructs a real, unconverged spring, confirms focus on a different column, and asserts that the spring remains active and its visual trajectory is preserved. The test verifies bookkeeping and confirmed focus, but it does not assert that the newly confirmed target is visible at the spring destination.
 
 That test captures the legitimate half of the contract: a focus echo must not gratuitously cancel a useful spring. It needs to be split by destination visibility rather than simply deleted.
 
 ### An already-confirmed parked target is intentionally not revealed
 
-`AXEventHandlerTests.swift:1920-2002` seeds `confirmedManagedFocusToken`, manually parks that focused column off-screen, sends another authoritative `focusedWindowChanged`, and asserts that the visual viewport does not move back.
+`AXEventHandlerTests.swift:1902-2002` seeds `confirmedManagedFocusToken`, manually parks that focused column off-screen, sends another authoritative `focusedWindowChanged`, and asserts that the visual viewport does not move back.
 
 This is an important compatibility boundary. Users may deliberately scroll away from the still-focused window; token equality plus parked visibility is not sufficient reason to snap back. A blanket “parked overrides `.alreadyConfirmedFocusedWindowChanged`” change would intentionally break this test and the behavior it protects.
 
