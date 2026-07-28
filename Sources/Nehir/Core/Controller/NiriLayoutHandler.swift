@@ -1603,7 +1603,8 @@ enum NiriWindowMoveResult {
             {
                 controller.workspaceNavigationHandler.activateWorkspace(
                     targetWsId,
-                    focusing: globalPrevious.token
+                    focusing: globalPrevious.token,
+                    placementIntentSource: "focus_previous_window"
                 )
                 return
             }

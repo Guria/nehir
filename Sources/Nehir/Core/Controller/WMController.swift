@@ -77,6 +77,17 @@ enum FocusWindowReason: String, Equatable {
     case deferredFocus
 }
 
+struct ExplicitWorkspacePlacementIntentSnapshot: Equatable {
+    let workspaceId: WorkspaceDescriptor.ID
+    let monitorId: Monitor.ID
+    let source: String
+    let generation: UInt64
+    let recordedUptime: TimeInterval
+    let ageMs: Int
+    let isValid: Bool
+    let rejection: String
+}
+
 @MainActor @Observable
 final class WMController {
     private static let runtimeDebugLogger = Logger(subsystem: "com.nehir", category: "runtime-debug")
@@ -183,9 +194,22 @@ final class WMController {
         let createdAt: Date
     }
 
+    private struct ExplicitWorkspacePlacementIntent {
+        let workspaceId: WorkspaceDescriptor.ID
+        let monitorId: Monitor.ID
+        let source: String
+        let generation: UInt64
+        let recordedUptime: TimeInterval
+        var invalidationReason: String?
+    }
+
     @ObservationIgnored
     private var explicitWorkspaceMoveIntentsByToken: [WindowToken: ExplicitWorkspaceMoveIntent] = [:]
     private let explicitWorkspaceMoveIntentTTL: TimeInterval = 15
+    @ObservationIgnored
+    private var explicitWorkspacePlacementIntent: ExplicitWorkspacePlacementIntent?
+    @ObservationIgnored
+    private var explicitWorkspacePlacementIntentGeneration: UInt64 = 0
 
     @ObservationIgnored
     private(set) lazy var mouseEventHandler = MouseEventHandler(controller: self)
@@ -1174,6 +1198,81 @@ final class WMController {
         return workspaceManager.activeWorkspaceOrFirst(on: monitor.id)
     }
 
+    /// Captures provenance only. Step 1 deliberately does not consult this record
+    /// while selecting a workspace, consume it, or assign it a timeout.
+    func recordExplicitWorkspacePlacementIntent(
+        workspaceId: WorkspaceDescriptor.ID,
+        monitorId: Monitor.ID,
+        source: String
+    ) {
+        let replacedGeneration = explicitWorkspacePlacementIntent?.generation
+        explicitWorkspacePlacementIntentGeneration &+= 1
+        let generation = explicitWorkspacePlacementIntentGeneration
+        let recordedUptime = ProcessInfo.processInfo.systemUptime
+        explicitWorkspacePlacementIntent = ExplicitWorkspacePlacementIntent(
+            workspaceId: workspaceId,
+            monitorId: monitorId,
+            source: source,
+            generation: generation,
+            recordedUptime: recordedUptime,
+            invalidationReason: nil
+        )
+        diagnostics.recordRuntimeDecisionEvent(
+            named: "explicit_workspace_placement_intent",
+            cluster: "window_placement"
+        ) {
+            [
+                RuntimeDecisionTraceField("workspace", workspaceId.uuidString),
+                RuntimeDecisionTraceField("monitor", monitorId),
+                RuntimeDecisionTraceField("source", source),
+                RuntimeDecisionTraceField("generation", generation),
+                RuntimeDecisionTraceField("replaced_generation", replacedGeneration),
+                RuntimeDecisionTraceField(
+                    "replaced_invalidation",
+                    replacedGeneration == nil ? nil : "superseded"
+                ),
+                RuntimeDecisionTraceField("recorded_uptime", recordedUptime),
+                RuntimeDecisionTraceField("consumption_policy", "none_instrumentation_only"),
+                RuntimeDecisionTraceField("expiry_policy", "none_instrumentation_only")
+            ]
+        }
+    }
+
+    /// Returns an immutable admission-time view and lazily marks topology/activity
+    /// invalidations. No expiry or consumption policy exists in the instrumentation
+    /// iteration; those decisions require the next runtime capture.
+    func explicitWorkspacePlacementIntentSnapshot() -> ExplicitWorkspacePlacementIntentSnapshot? {
+        guard var intent = explicitWorkspacePlacementIntent else { return nil }
+        if intent.invalidationReason == nil {
+            if workspaceManager.descriptor(for: intent.workspaceId) == nil
+                || workspaceManager.monitor(byId: intent.monitorId) == nil
+            {
+                intent.invalidationReason = "monitor_mismatch"
+            } else if workspaceManager.monitorId(for: intent.workspaceId) != intent.monitorId {
+                intent.invalidationReason = "monitor_mismatch"
+            } else if workspaceManager.activeWorkspace(on: intent.monitorId)?.id != intent.workspaceId {
+                intent.invalidationReason = "workspace_inactive"
+            }
+            if intent.invalidationReason != nil {
+                explicitWorkspacePlacementIntent = intent
+            }
+        }
+        let ageMs = max(
+            0,
+            Int(((ProcessInfo.processInfo.systemUptime - intent.recordedUptime) * 1000).rounded())
+        )
+        return ExplicitWorkspacePlacementIntentSnapshot(
+            workspaceId: intent.workspaceId,
+            monitorId: intent.monitorId,
+            source: intent.source,
+            generation: intent.generation,
+            recordedUptime: intent.recordedUptime,
+            ageMs: ageMs,
+            isValid: intent.invalidationReason == nil,
+            rejection: intent.invalidationReason ?? "none"
+        )
+    }
+
     func resolveWorkspaceForNewWindow(
         workspaceName: String? = nil,
         axRef: AXWindowRef,
@@ -1202,7 +1301,8 @@ final class WMController {
             windowFrame: windowFrame,
             existingEntry: nil,
             fallbackWorkspaceId: fallbackWorkspaceId,
-            context: .automatic
+            context: .automatic,
+            recordPlacementDecision: true
         )
     }
 
@@ -1210,6 +1310,7 @@ final class WMController {
         let workspaceId: WorkspaceDescriptor.ID?
         let monitorId: Monitor.ID?
         let isAuthoritative: Bool
+        let winner: String
     }
 
     private func resolveWorkspacePlacement(
@@ -1226,8 +1327,85 @@ final class WMController {
         windowFrame: CGRect?,
         existingEntry: WindowModel.Entry?,
         fallbackWorkspaceId: WorkspaceDescriptor.ID?,
-        context: WindowRuleReevaluationContext
+        context: WindowRuleReevaluationContext,
+        recordPlacementDecision: Bool
     ) -> WorkspaceDescriptor.ID {
+        func finish(_ workspaceId: WorkspaceDescriptor.ID, winner: String) -> WorkspaceDescriptor.ID {
+            guard recordPlacementDecision,
+                  context == .automatic,
+                  existingEntry == nil,
+                  let pid
+            else {
+                return workspaceId
+            }
+            diagnostics.recordRuntimeDecisionEvent(
+                named: "placement_affinity_decision",
+                cluster: "window_placement"
+            ) { [self] in
+                let activation = createPlacementContext?.explicitWorkspaceActivation
+                let strongerWinners: Set<String> = [
+                    "explicit_move", "workspace_rule", "tracked_parent", "structural_replacement",
+                    "active_focus_request", "native_space"
+                ]
+                let activationRejection: String = if let activation, activation.rejection != "none" {
+                    activation.rejection
+                } else if activation != nil, strongerWinners.contains(winner) {
+                    "stronger_affinity"
+                } else {
+                    "none"
+                }
+                let containedFrameMonitor = monitorContainingPlacementFrame(windowFrame)?.id
+                let approximatedFrameMonitor = monitorForPlacementFrame(windowFrame)?.id
+                let cursorPoint = createPlacementContext?.cursorEvidence?.appKitPoint.map {
+                    "\($0.x),\($0.y)"
+                }
+                return [
+                    RuntimeDecisionTraceField("token", WindowToken(pid: pid, windowId: axRef.windowId)),
+                    RuntimeDecisionTraceField("winner", winner),
+                    RuntimeDecisionTraceField("workspace", workspaceId.uuidString),
+                    RuntimeDecisionTraceField("monitor", self.workspaceManager.monitorId(for: workspaceId)),
+                    RuntimeDecisionTraceField("explicit_activation_workspace", activation?.workspaceId.uuidString),
+                    RuntimeDecisionTraceField("explicit_activation_monitor", activation?.monitorId),
+                    RuntimeDecisionTraceField("explicit_activation_source", activation?.source),
+                    RuntimeDecisionTraceField("explicit_activation_age_ms", activation?.ageMs),
+                    RuntimeDecisionTraceField("explicit_activation_generation", activation?.generation),
+                    RuntimeDecisionTraceField(
+                        "explicit_activation_valid",
+                        activation.map { String($0.isValid) } ?? "false"
+                    ),
+                    RuntimeDecisionTraceField("explicit_activation_rejection", activationRejection),
+                    RuntimeDecisionTraceField("explicit_activation_consumed", "false"),
+                    RuntimeDecisionTraceField("explicit_activation_expired", "false"),
+                    RuntimeDecisionTraceField(
+                        "explicit_activation_observation",
+                        activation != nil && activationRejection == "none"
+                            ? "eligible_not_applied_instrumentation_only"
+                            : nil
+                    ),
+                    RuntimeDecisionTraceField("context_source", createPlacementContext?.source),
+                    RuntimeDecisionTraceField("cursor_point_appkit", cursorPoint),
+                    RuntimeDecisionTraceField(
+                        "cursor_screen_display",
+                        createPlacementContext?.cursorEvidence?.containingScreenDisplayId
+                    ),
+                    RuntimeDecisionTraceField(
+                        "cursor_mapped_monitor",
+                        createPlacementContext?.cursorEvidence?.mappedMonitorId
+                            ?? createPlacementContext?.cursorMonitorId
+                    ),
+                    RuntimeDecisionTraceField(
+                        "monitor_topology",
+                        createPlacementContext?.cursorEvidence?.monitorTopology
+                    ),
+                    RuntimeDecisionTraceField("placement_frame", windowFrame.map(String.init(describing:))),
+                    RuntimeDecisionTraceField("placement_frame_strict_monitor", containedFrameMonitor),
+                    RuntimeDecisionTraceField("placement_frame_strict_contained", String(containedFrameMonitor != nil)),
+                    RuntimeDecisionTraceField("placement_frame_approximated_monitor", approximatedFrameMonitor)
+                ]
+            }
+            return workspaceId
+        }
+
         if context == .automatic, let existingEntry {
             return existingEntry.workspaceId
         }
@@ -1236,21 +1414,21 @@ final class WMController {
            let explicitMoveTarget = explicitWorkspaceMovePlacementTarget(pid: pid, windowId: axRef.windowId),
            let workspaceId = explicitMoveTarget.workspaceId
         {
-            return workspaceId
+            return finish(workspaceId, winner: "explicit_move")
         }
 
         if existingEntry == nil,
            let structuralReplacementWorkspaceId,
            workspaceManager.descriptor(for: structuralReplacementWorkspaceId) != nil
         {
-            return structuralReplacementWorkspaceId
+            return finish(structuralReplacementWorkspaceId, winner: "structural_replacement")
         }
 
         if existingEntry == nil,
            inheritTrackedParentWorkspace,
            let parentWorkspaceId = workspaceForTrackedParentWindow(parentWindowId: parentWindowId, pid: pid)
         {
-            return parentWorkspaceId
+            return finish(parentWorkspaceId, winner: "tracked_parent")
         }
 
         let placementTarget = createPlacementTarget(
@@ -1272,7 +1450,7 @@ final class WMController {
                targetMonitorId: placementTarget.isAuthoritative ? placementTarget.monitorId : nil
            )
         {
-            return siblingWorkspaceId
+            return finish(siblingWorkspaceId, winner: "same_app_sibling")
         }
 
         if let workspaceName,
@@ -1281,7 +1459,7 @@ final class WMController {
            !restrictWorkspaceRuleToPlacementMonitor ||
            shouldApplyWorkspaceRule(workspaceId, placementTarget: placementTarget)
         {
-            return workspaceId
+            return finish(workspaceId, winner: "workspace_rule")
         }
 
         // A newly-created non-user-addressable transient floating surface with no
@@ -1298,14 +1476,15 @@ final class WMController {
            let pid,
            let siblingWorkspaceId = workspaceForPrimarySiblingWindow(pid: pid)
         {
-            return siblingWorkspaceId
+            return finish(siblingWorkspaceId, winner: "primary_sibling")
         }
 
         if let existingEntry {
             return existingEntry.workspaceId
         }
 
-        return defaultWorkspaceId(placementTarget: placementTarget)
+        let workspaceId = defaultWorkspaceId(placementTarget: placementTarget)
+        return finish(workspaceId, winner: placementTarget.winner)
     }
 
     private func workspaceForTrackedParentWindow(
@@ -1478,7 +1657,8 @@ final class WMController {
         if preferManagedFocusPlacement {
             if let target = managedFocusPlacementTarget(
                 createPlacementContext?.activeFocusRequestWorkspaceId,
-                createPlacementContext?.activeFocusRequestMonitorId
+                createPlacementContext?.activeFocusRequestMonitorId,
+                winner: "active_focus_request"
             ) {
                 return target
             }
@@ -1489,7 +1669,8 @@ final class WMController {
                 return WorkspacePlacementTarget(
                     workspaceId: workspace.id,
                     monitorId: nativeMonitorId,
-                    isAuthoritative: true
+                    isAuthoritative: true,
+                    winner: "native_space"
                 )
             }
 
@@ -1507,7 +1688,8 @@ final class WMController {
                     return WorkspacePlacementTarget(
                         workspaceId: workspace.id,
                         monitorId: frameMonitor.id,
-                        isAuthoritative: true
+                        isAuthoritative: true,
+                        winner: "frame"
                     )
                 }
 
@@ -1518,7 +1700,8 @@ final class WMController {
                     return WorkspacePlacementTarget(
                         workspaceId: workspace.id,
                         monitorId: interactionMonitorId,
-                        isAuthoritative: true
+                        isAuthoritative: true,
+                        winner: "interaction"
                     )
                 }
             }
@@ -1533,13 +1716,15 @@ final class WMController {
                 return WorkspacePlacementTarget(
                     workspaceId: activeWorkspace.id,
                     monitorId: interactionMonitorId,
-                    isAuthoritative: true
+                    isAuthoritative: true,
+                    winner: "interaction"
                 )
             }
 
             if let target = managedFocusPlacementTarget(
                 createPlacementContext?.focusedWorkspaceId,
-                createPlacementContext?.focusedMonitorId
+                createPlacementContext?.focusedMonitorId,
+                winner: createPlacementContext?.focusedWorkspaceSource ?? "confirmed_focus"
             ) {
                 return target
             }
@@ -1568,7 +1753,8 @@ final class WMController {
             return WorkspacePlacementTarget(
                 workspaceId: workspace.id,
                 monitorId: cursorMonitorId,
-                isAuthoritative: true
+                isAuthoritative: true,
+                winner: "cursor"
             )
         }
 
@@ -1600,7 +1786,8 @@ final class WMController {
             return WorkspacePlacementTarget(
                 workspaceId: workspace.id,
                 monitorId: interactionMonitorId,
-                isAuthoritative: true
+                isAuthoritative: true,
+                winner: "interaction"
             )
         }
 
@@ -1610,7 +1797,8 @@ final class WMController {
             return WorkspacePlacementTarget(
                 workspaceId: workspace.id,
                 monitorId: monitorId,
-                isAuthoritative: true
+                isAuthoritative: true,
+                winner: "native_space"
             )
         }
 
@@ -1630,7 +1818,8 @@ final class WMController {
             return WorkspacePlacementTarget(
                 workspaceId: workspace.id,
                 monitorId: interactionMonitorId,
-                isAuthoritative: true
+                isAuthoritative: true,
+                winner: "interaction"
             )
         }
 
@@ -1640,7 +1829,8 @@ final class WMController {
             return WorkspacePlacementTarget(
                 workspaceId: workspace.id,
                 monitorId: monitor.id,
-                isAuthoritative: true
+                isAuthoritative: true,
+                winner: "frame"
             )
         }
 
@@ -1650,21 +1840,24 @@ final class WMController {
             return WorkspacePlacementTarget(
                 workspaceId: workspace.id,
                 monitorId: monitor.id,
-                isAuthoritative: true
+                isAuthoritative: true,
+                winner: "frame"
             )
         }
 
         if !preferManagedFocusPlacement {
             if let target = managedFocusPlacementTarget(
                 createPlacementContext?.activeFocusRequestWorkspaceId,
-                createPlacementContext?.activeFocusRequestMonitorId
+                createPlacementContext?.activeFocusRequestMonitorId,
+                winner: "active_focus_request"
             ) {
                 return target
             }
 
             if let target = managedFocusPlacementTarget(
                 createPlacementContext?.focusedWorkspaceId,
-                createPlacementContext?.focusedMonitorId
+                createPlacementContext?.focusedMonitorId,
+                winner: createPlacementContext?.focusedWorkspaceSource ?? "confirmed_focus"
             ) {
                 return target
             }
@@ -1676,7 +1869,8 @@ final class WMController {
             return WorkspacePlacementTarget(
                 workspaceId: workspace.id,
                 monitorId: monitorId,
-                isAuthoritative: true
+                isAuthoritative: true,
+                winner: "interaction"
             )
         }
 
@@ -1686,14 +1880,16 @@ final class WMController {
             return WorkspacePlacementTarget(
                 workspaceId: fallbackWorkspaceId,
                 monitorId: workspaceManager.monitorId(for: fallbackWorkspaceId),
-                isAuthoritative: false
+                isAuthoritative: false,
+                winner: "fallback"
             )
         }
 
         return WorkspacePlacementTarget(
             workspaceId: nil,
             monitorId: nil,
-            isAuthoritative: false
+            isAuthoritative: false,
+            winner: "fallback"
         )
     }
 
@@ -1723,7 +1919,8 @@ final class WMController {
         return WorkspacePlacementTarget(
             workspaceId: intent.workspaceId,
             monitorId: workspaceManager.monitorId(for: intent.workspaceId),
-            isAuthoritative: true
+            isAuthoritative: true,
+            winner: "explicit_move"
         )
     }
 
@@ -1753,7 +1950,8 @@ final class WMController {
 
     private func managedFocusPlacementTarget(
         _ workspaceId: WorkspaceDescriptor.ID?,
-        _ monitorId: Monitor.ID?
+        _ monitorId: Monitor.ID?,
+        winner: String
     ) -> WorkspacePlacementTarget? {
         if let workspaceId,
            workspaceManager.descriptor(for: workspaceId) != nil
@@ -1762,7 +1960,8 @@ final class WMController {
             return WorkspacePlacementTarget(
                 workspaceId: workspaceId,
                 monitorId: resolvedMonitorId,
-                isAuthoritative: true
+                isAuthoritative: true,
+                winner: winner
             )
         }
 
@@ -1772,7 +1971,8 @@ final class WMController {
             return WorkspacePlacementTarget(
                 workspaceId: workspace.id,
                 monitorId: monitorId,
-                isAuthoritative: true
+                isAuthoritative: true,
+                winner: winner
             )
         }
 
@@ -2684,7 +2884,8 @@ final class WMController {
         structuralReplacementWorkspaceId: WorkspaceDescriptor.ID? = nil,
         restrictWorkspaceRuleToPlacementMonitor: Bool = true,
         createPlacementContext: WindowCreatePlacementContext? = nil,
-        context: WindowRuleReevaluationContext = .automatic
+        context: WindowRuleReevaluationContext = .automatic,
+        recordPlacementDecision: Bool = true
     ) -> WorkspaceDescriptor.ID {
         let inheritTrackedParentWorkspace = shouldInheritTrackedParentWorkspace(for: evaluation)
         let bindTransientFloatingToAppWorkspace =
@@ -2708,7 +2909,8 @@ final class WMController {
             windowFrame: evaluation.facts.windowServer?.frame,
             existingEntry: existingEntry,
             fallbackWorkspaceId: fallbackWorkspaceId,
-            context: context
+            context: context,
+            recordPlacementDecision: recordPlacementDecision
         )
     }
 

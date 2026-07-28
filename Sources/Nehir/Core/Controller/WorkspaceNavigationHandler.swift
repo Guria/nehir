@@ -241,6 +241,11 @@ final class WorkspaceNavigationHandler {
         }
 
         _ = controller.workspaceManager.setInteractionMonitor(targetMonitorId)
+        controller.recordExplicitWorkspacePlacementIntent(
+            workspaceId: targetWorkspace.id,
+            monitorId: target.id,
+            source: "monitor_navigation"
+        )
         let handoff = resolveWorkspaceTransitionFocusHandoff(for: targetWorkspace.id)
 
         controller.layoutRefreshController.commitWorkspaceTransition(
@@ -288,6 +293,11 @@ final class WorkspaceNavigationHandler {
             with: targetWsId, on: targetMonitor.id
         ) else { return }
 
+        controller.recordExplicitWorkspacePlacementIntent(
+            workspaceId: targetWsId,
+            monitorId: currentMonitorId,
+            source: "workspace_monitor_swap"
+        )
         controller.syncMonitorsToNiriEngine()
 
         let focusToken = controller.resolveAndSetWorkspaceFocusToken(for: targetWsId)
@@ -332,6 +342,11 @@ final class WorkspaceNavigationHandler {
         }
 
         guard let result = controller.workspaceManager.focusWorkspace(named: rawWorkspaceID) else { return }
+        controller.recordExplicitWorkspacePlacementIntent(
+            workspaceId: result.workspace.id,
+            monitorId: result.monitor.id,
+            source: "numbered_workspace"
+        )
 
         commitWorkspaceTransitionFocusHandoff(
             targetWorkspaceId: result.workspace.id,
@@ -368,6 +383,11 @@ final class WorkspaceNavigationHandler {
         guard controller.workspaceManager.setActiveWorkspace(targetWorkspace.id, on: currentMonitorId) else {
             return
         }
+        controller.recordExplicitWorkspacePlacementIntent(
+            workspaceId: targetWorkspace.id,
+            monitorId: currentMonitorId,
+            source: "adjacent_navigation"
+        )
 
         let monitor = controller.workspaceManager.monitor(for: targetWorkspace.id)
             ?? controller.workspaceManager.monitor(byId: currentMonitorId)
@@ -421,6 +441,11 @@ final class WorkspaceNavigationHandler {
         }
 
         guard controller.workspaceManager.setActiveWorkspace(targetWsId, on: targetMonitor.id) else { return }
+        controller.recordExplicitWorkspacePlacementIntent(
+            workspaceId: targetWsId,
+            monitorId: targetMonitor.id,
+            source: "numbered_workspace_anywhere"
+        )
 
         controller.syncMonitorsToNiriEngine()
 
@@ -450,6 +475,11 @@ final class WorkspaceNavigationHandler {
         guard controller.workspaceManager.setActiveWorkspace(prevWorkspace.id, on: currentMonitorId) else {
             return
         }
+        controller.recordExplicitWorkspacePlacementIntent(
+            workspaceId: prevWorkspace.id,
+            monitorId: currentMonitorId,
+            source: "back_and_forth"
+        )
 
         let monitor = controller.workspaceManager.monitor(for: prevWorkspace.id)
             ?? controller.workspaceManager.monitor(byId: currentMonitorId)
@@ -473,7 +503,8 @@ final class WorkspaceNavigationHandler {
     /// `swapCurrentWorkspaceWithMonitor`).
     func activateWorkspace(
         _ targetWorkspaceId: WorkspaceDescriptor.ID,
-        focusing targetToken: WindowToken
+        focusing targetToken: WindowToken,
+        placementIntentSource: String? = nil
     ) {
         guard let controller else { return }
         guard let engine = controller.niriEngine,
@@ -503,6 +534,13 @@ final class WorkspaceNavigationHandler {
 
         guard controller.workspaceManager.setActiveWorkspace(targetWorkspaceId, on: targetMonitor.id) else {
             return
+        }
+        if let placementIntentSource {
+            controller.recordExplicitWorkspacePlacementIntent(
+                workspaceId: targetWorkspaceId,
+                monitorId: targetMonitor.id,
+                source: placementIntentSource
+            )
         }
         controller.syncMonitorsToNiriEngine()
 

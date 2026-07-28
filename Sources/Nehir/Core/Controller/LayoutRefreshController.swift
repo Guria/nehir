@@ -1444,7 +1444,8 @@ import QuartzCore
                 existingEntry: existingEntry,
                 fallbackWorkspaceId: focusedWorkspaceId,
                 restrictWorkspaceRuleToPlacementMonitor: false,
-                createPlacementContext: createPlacementContext
+                createPlacementContext: createPlacementContext,
+                recordPlacementDecision: false
             )
             var restoredNativeFullscreenReplacement = false
             if controller.workspaceAssignment(pid: pid, windowId: winId) == nil,
