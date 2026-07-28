@@ -196,6 +196,12 @@
         "repo": "https://github.com/BarutSRB/OmniWM",
         "hash": "ee554c7"
       }
+    ],
+    "Sources/Nehir/UI/WorkspaceBar/WorkspaceBarDataSource.swift": [
+      {
+        "repo": "https://github.com/BarutSRB/OmniWM",
+        "hash": "ac0a0287"
+      }
     ]
   }
 }
