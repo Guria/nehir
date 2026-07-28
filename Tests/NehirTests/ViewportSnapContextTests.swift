@@ -549,24 +549,8 @@ private func makeContext(
             isFFM: true,
             state: &fixture.state,
             context: fixture.context,
-            motion: .disabled
-        )
-
-        #expect(!revealed)
-        #expect(fixture.state.viewOffsetPixels.target() == originalTarget)
-    }
-
-    @Test func scrollToRevealSkipsWhenLocked() {
-        var fixture = makeRevealFixture(viewportWidth: 800)
-        fixture.state.isScrollLocked = true
-        let originalTarget = fixture.state.viewOffsetPixels.target()
-
-        let revealed = fixture.engine.scrollToReveal(
-            columnIndex: 2,
-            isFFM: false,
-            state: &fixture.state,
-            context: fixture.context,
-            motion: .disabled
+            motion: .disabled,
+            trigger: .automatic
         )
 
         #expect(!revealed)
@@ -582,7 +566,8 @@ private func makeContext(
             isFFM: false,
             state: &fixture.state,
             context: fixture.context,
-            motion: .disabled
+            motion: .disabled,
+            trigger: .automatic
         )
 
         #expect(!revealed)
@@ -657,7 +642,8 @@ private func makeContext(
             isFFM: false,
             state: &fixture.state,
             context: fixture.context,
-            motion: .disabled
+            motion: .disabled,
+            trigger: .automatic
         )
 
         #expect(revealed)
@@ -673,7 +659,8 @@ private func makeContext(
             isFFM: false,
             state: &fixture.state,
             context: fixture.context,
-            motion: .disabled
+            motion: .disabled,
+            trigger: .automatic
         )
 
         #expect(revealed)
@@ -689,7 +676,8 @@ private func makeContext(
             isFFM: false,
             state: &fixture.state,
             context: fixture.context,
-            motion: .disabled
+            motion: .disabled,
+            trigger: .automatic
         )
 
         #expect(revealed)
@@ -706,7 +694,8 @@ private func makeContext(
                 isFFM: false,
                 state: &fixture.state,
                 context: fixture.context,
-                motion: .disabled
+                motion: .disabled,
+                trigger: .automatic
             )
 
             #expect(revealed)

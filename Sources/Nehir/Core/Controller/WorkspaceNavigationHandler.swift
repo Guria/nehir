@@ -121,7 +121,8 @@ final class WorkspaceNavigationHandler {
                     motion: controller.motionPolicy.snapshot(),
                     state: &targetState,
                     workingFrame: workingFrame,
-                    gaps: gap
+                    gaps: gap,
+                revealTrigger: .automatic
                 )
             }
         }

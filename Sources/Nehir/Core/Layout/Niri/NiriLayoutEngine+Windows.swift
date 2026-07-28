@@ -323,7 +323,8 @@ extension NiriLayoutEngine {
                 state: &state,
                 workingFrame: workingFrame,
                 gaps: gaps,
-                fromContainerIndex: fromIndexForVisibility
+                fromContainerIndex: fromIndexForVisibility,
+            revealTrigger: .automatic
             )
             visibilityWasCorrected = true
         }
@@ -510,7 +511,8 @@ extension NiriLayoutEngine {
                     state: &state,
                     workingFrame: workingFrame,
                     gaps: gaps,
-                    fromContainerIndex: state.activeColumnIndex
+                    fromContainerIndex: state.activeColumnIndex,
+                revealTrigger: .automatic
                 )
                 visibilityWasCorrected = true
             }

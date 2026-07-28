@@ -848,7 +848,10 @@ private func prepareIPCNiriState(
         #expect(result == .executed)
     }
 
-    @Test func windowFocusBypassesViewportScrollLockForExplicitNavigation() throws {
+    /// Window 9113 lands in column 1, which is clipped at this geometry (800pt working
+    /// frame, three 400pt columns at x = 0, 416, 832). Scroll lock leaves a target the
+    /// user can already partly see alone, so focus moves but the viewport does not.
+    @Test func windowFocusLeavesClippedTargetAloneWhileScrollLocked() throws {
         let monitor = makeLayoutPlanTestMonitor(width: 800, height: 600)
         let controller = makeLayoutPlanTestController(monitors: [monitor])
         let workspaceId = try #require(controller.workspaceManager.workspaceId(for: "1", createIfMissing: false))
@@ -899,7 +902,65 @@ private func prepareIPCNiriState(
         #expect(result == .executed)
         #expect(updated.isScrollLocked)
         #expect(updated.selectedNodeId == targetNode.id)
-        #expect(viewStart > 100)
+        #expect(context.visibility(of: 1, viewportOffset: viewStart, in: updated) == .clipped(.maximum))
+        #expect(viewStart == 0)
+    }
+
+    /// Window 9112 lands in column 2, which is parked past the right edge at this
+    /// geometry. A parked target is revealed even while locked, or the window would take
+    /// focus while staying invisible.
+    @Test func windowFocusRevealsParkedTargetWhileScrollLocked() throws {
+        let monitor = makeLayoutPlanTestMonitor(width: 800, height: 600)
+        let controller = makeLayoutPlanTestController(monitors: [monitor])
+        let workspaceId = try #require(controller.workspaceManager.workspaceId(for: "1", createIfMissing: false))
+        let handles = prepareIPCNiriState(
+            on: controller,
+            assignments: [
+                (workspaceId, 9111),
+                (workspaceId, 9112),
+                (workspaceId, 9113)
+            ],
+            focusedWindowId: 9111
+        )
+        let engine = try #require(controller.niriEngine)
+        engine.revealStyle = .center
+        for column in engine.columns(in: workspaceId) {
+            column.width = .fixed(400)
+            column.cachedWidth = 400
+        }
+        let targetHandle = try #require(handles[9112])
+        let targetNode = try #require(engine.findNode(for: targetHandle))
+        var state = controller.workspaceManager.niriViewportState(for: workspaceId)
+        state.selectedNodeId = engine.findNode(for: try #require(handles[9111]))?.id
+        state.activeColumnIndex = 0
+        state.viewOffsetPixels = .static(0)
+        state.isScrollLocked = true
+        controller.workspaceManager.updateNiriViewportState(state, for: workspaceId)
+        let router = makeIPCCommandRouter(for: controller)
+
+        let result = router.handle(
+            IPCWindowRequest(
+                name: .focus,
+                windowId: IPCWindowOpaqueID.encode(
+                    pid: targetHandle.id.pid,
+                    windowId: targetHandle.id.windowId,
+                    sessionToken: ipcCommandRouterSessionToken
+                )
+            )
+        )
+
+        let updated = controller.workspaceManager.niriViewportState(for: workspaceId)
+        let context = engine.makeViewportSnapContext(
+            columns: engine.columns(in: workspaceId),
+            state: updated,
+            workingFrame: controller.insetWorkingFrame(for: monitor),
+            gaps: controller.gapSize(for: monitor)
+        )
+        let viewStart = context.currentViewStart(in: updated)
+        #expect(result == .executed)
+        #expect(updated.isScrollLocked)
+        #expect(updated.selectedNodeId == targetNode.id)
+        #expect(context.visibility(of: 2, viewportOffset: viewStart, in: updated) == .fullyVisible)
     }
 
     @Test func windowNavigateUsesWindowActionHandlerRoute() throws {

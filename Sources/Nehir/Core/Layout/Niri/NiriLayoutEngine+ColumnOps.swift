@@ -207,7 +207,8 @@ extension NiriLayoutEngine {
             motion: motion,
             state: &state,
             workingFrame: workingFrame,
-            gaps: gaps
+            gaps: gaps,
+        revealTrigger: .automatic
         )
 
         return true
@@ -640,7 +641,8 @@ extension NiriLayoutEngine {
             gaps: gaps,
             orientation: orientation,
             fromContainerIndex: previousActiveColumnIndex,
-            previousActiveContainerPosition: previousActiveColumnPosition
+            previousActiveContainerPosition: previousActiveColumnPosition,
+        revealTrigger: .automatic
         )
 
         if case .horizontalConsume = purePlan {
@@ -887,7 +889,8 @@ extension NiriLayoutEngine {
             state: &state,
             workingFrame: workingFrame,
             gaps: gaps,
-            orientation: orientation
+            orientation: orientation,
+        revealTrigger: .automatic
         )
 
         return true
@@ -902,7 +905,7 @@ extension NiriLayoutEngine {
         gaps: CGFloat,
         animationConfig: SpringConfig? = nil,
         fromContainerIndex: Int? = nil,
-        revealTrigger: RevealTrigger = .automatic
+        revealTrigger: RevealTrigger
     ) {
         if let firstWindow = column.windowNodes.first {
             ensureSelectionVisible(
