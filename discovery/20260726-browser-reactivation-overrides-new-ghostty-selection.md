@@ -1,7 +1,9 @@
 # Quick-terminal close steals the newly created window's focus, selection and resize target
 
-**Status:** root cause fully identified and fixed; fix pending final real-repro
-validation. Verified against `main` on 2026-07-28.
+**Status:** root cause identified, fixed, and confirmed on the real repro
+(2026-07-28). Regression tests landed alongside the fix; the branch is not yet
+merged, so this note stays in `discovery/` until it ships. Verified against
+`main` on 2026-07-28.
 
 The investigation ran through three successive understandings, all recorded
 below because the discarded ones carry the load-bearing lessons:
@@ -619,8 +621,55 @@ Ghostty window was created or focused during the quick-terminal session.
 4. **Removal-driven focus recovery yields to an in-flight same-pid
    replacement** (managed-replacement burst pending → defer; replacement
    create arrived → recovery dropped; nothing arrived → recovery resumes).
-5. **Overlay-close anchor assert on the live confirmed token** remains as the
-   re-front backstop for orderings where the destroy processes first.
+   The deferral is keyed by the burst it waits on — pid *and* workspace — so
+   two apps replacing windows in the same workspace cannot consume each
+   other's deferral, and the paths that cancel bursts without flushing (a full
+   rescan, an app terminating) resolve the deferrals those bursts owed instead
+   of stranding the removed window's recovery.
+5. **The overlay-close assert keys on the overlay window's identity.** Window
+   ids the rule engine recognizes as an app's overlay are recorded, and the
+   assert fires when one of *those* windows is destroyed. Evidence recorded
+   when the overlay opened cannot be used: the owner restores the previous app
+   before the destroy notification arrives, which can be seconds after the
+   overlay was shown, by which point that evidence has expired — a revision
+   gated on it never fired at all in validation.
+
+Both external app-level sources (`workspaceDidActivateApplication` and
+`cgsFrontAppChanged`) count as cause-less for the stamp; classifying only the
+first would let the other path mark the unwanted restore as explicit and
+defeat the assert.
+
+## Validation and shipped state (2026-07-28)
+
+The fix is confirmed on the real repro. It ships on the
+`quick-terminal-close-selection-theft` branch as five behaviour commits plus
+regression tests:
+
+- self-attributing focus-activation traces (`self_fronting_age_ms`,
+  timestamped create-focus ring, `ensureFocusedTokenValid` branch tracing);
+- the destroy-liveness narrowing;
+- the removal-recovery deferral;
+- the overlay-close anchor assert with the confirmation-class stamp;
+- `Tests/NehirTests/QuickTerminalCloseAnchorTests.swift`.
+
+The tests assert at window granularity — the overlay's app owns a second
+window throughout, so a process-level check could not tell a correct recovery
+from one that picked the wrong window of the same app — and they assert
+Nehir's intent (the window it fronts, the request it opens) rather than the
+confirmed token, which only changes once macOS echoes the activation back.
+They were verified to fail both with the assert disabled and with the
+explicit-stamp preference disabled.
+
+Known residual, not fixable from Nehir: a one-to-two-frame visible flash to
+the previous app while its externally applied activation is corrected. The
+upstream candidate remains skipping Ghostty's `previousApp` restore when a
+regular window was created or focused during the quick-terminal session.
+
+One tracing anomaly stayed unexplained and is recorded above: viewport-ring
+twins of the destroy-liveness records did not appear in a capture where the
+always-on create-focus ring showed the events. It did not affect the
+mechanism, which is carried by the always-on ring plus the timestamped
+confirmation log.
 
 ## Why the preserved token at quick-terminal open is kept
 
