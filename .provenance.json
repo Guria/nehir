@@ -169,6 +169,12 @@
         "hash": "06eb42d"
       }
     ],
+    "Sources/Nehir/Core/PrivateAPIs.swift": [
+      {
+        "repo": "https://github.com/BarutSRB/OmniWM",
+        "hash": "a4b8611a"
+      }
+    ],
     "Sources/Nehir/Core/SkyLight/DisplaySpacesMode.swift": [
       {
         "repo": "https://github.com/BarutSRB/OmniWM",
