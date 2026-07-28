@@ -1,4 +1,4 @@
-# Scroll lock suppresses explicit hotkey focus reveals (AX focus-confirm path defaults to `.automatic`)
+# Scroll lock suppresses explicit hotkey focus reveals (pure-layout bridge dispatch defaults to `.automatic`)
 
 Status: discovery — root cause confirmed in source; fix candidate identified.
 
@@ -65,7 +65,9 @@ lock-specific.
 There are **two reveal entry points** for a focus change, with different
 trigger policies:
 
-1. **Layout-command path** — `NiriLayoutHandler.focusInDirection` →
+1. **Layout-command path** — `NiriLayoutHandler.focusNeighbor(direction:)`
+   (`NiriLayoutHandler.swift:1458`, dispatched from
+   `CommandHandler.performCommand` `:56`) →
    `NiriNavigation.focusTarget` → `ensureSelectionVisible(...,
    revealTrigger: .explicitNavigation)` (`NiriNavigation.swift:306`, and the
    sibling call sites at `:103, :331, :419, :558, :589, :654, :685`). This path
@@ -88,6 +90,14 @@ trigger policies:
    lock. The `.explicitNavigation` call sites in `focusTarget` are the
    *fallback* branches that only run when the pure-layout reducer reports
    `.unsupported`.
+
+   `focusNeighbor` is not the only explicit entry into this path.
+   `NiriLayoutHandler.focusWindowOrWorkspace(direction:)`
+   (`NiriLayoutHandler.swift:1726`, dispatched from
+   `CommandHandler.performCommand` `:130` and `:132`) also calls
+   `engine.focusTarget` (`:1736`) and is suppressed identically. Both entry
+   points are explicit hotkey commands; `performCommand` has no background
+   callers.
 
 2. **AX focus-confirm path** — after the focus change is confirmed via
    Accessibility, `AXEventHandler` re-evaluates the reveal and calls
@@ -114,7 +124,17 @@ trigger policies:
 
 So an explicit hotkey focus is suppressed twice: once at dispatch time (the
 pure-layout bridge's default `.automatic` trigger) and once at AX-confirm time
-(the missing `trigger:` argument). Either alone would pin the viewport.
+(the missing `trigger:` argument).
+
+The two suppressions are **not independent**, and only the dispatch-time one
+pins the viewport. `ViewportSnapContext.currentViewStart(in:)` returns
+`state.targetViewPosPixels(...)` (`ViewportState+Geometry.swift:82-84`) — the
+*target* viewport position, not the animated current one. So once the dispatch
+reveal has set the target offset, the confirm-time reveal evaluates visibility
+against the already-revealed position, reads `.fullyVisible`, and no-ops. A
+confirm-time reveal left as `.automatic` therefore costs nothing once dispatch
+is fixed; a dispatch-time reveal left as `.automatic` pins the viewport
+regardless of what the confirm path does.
 
 The trigger distinction exists only at call sites; nothing forces a focus
 command entry point to declare itself explicit. `RevealTrigger` was introduced
@@ -131,9 +151,14 @@ hotkey, a workspace-bar click, an app self-raise, or background churn. Passing
 confirmations scroll a locked viewport — the exact thing the lock exists to
 stop. Any fix must plumb (or infer) the trigger provenance:
 
-- The dispatch path (`NiriLayoutHandler.focusInDirection`,
-  `focusPrevious/Next`, workspace-bar `navigate.window`) knows the trigger and
-  already runs `scrollToReveal` synchronously with the right context.
+- The dispatch path (`NiriLayoutHandler.focusNeighbor(direction:)` `:1458`,
+  `focusWindowOrWorkspace(direction:)` `:1726`, `focusPrevious()` `:1571`, and
+  workspace-bar window activation via `NavigationSource.workspaceBarWindow` →
+  `WindowActionHandler.navigateToWindowInternal` `:469`) knows the trigger and
+  already runs `scrollToReveal` synchronously with the right context. Note
+  `navigateToWindowInternal` already passes
+  `revealTrigger: .explicitNavigation` (`:501`) and is not affected by this
+  bug.
 - A short-lived "explicit navigation pending" latch keyed by the target token
   (analogous to existing latches like `recentParkedFocusFollowByToken`) could
   carry provenance to the confirm callback.
@@ -155,9 +180,17 @@ stop. Any fix must plumb (or infer) the trigger provenance:
    be unnecessary scope.
 
 Decision needed before planning: whether fix 1 alone satisfies the spec'd
-behavior (likely, but should be validated in the user's live repro), and
-whether the vertical/tabbed variants inside the pure-layout bridge need the
-same trigger.
+behavior — likely, per the `currentViewStart` reasoning above, but it should be
+validated in the user's live repro.
+
+There are no separate vertical/tabbed traversal variants inside the pure-layout
+bridge to audit: `pureLayoutFocusTarget`
+(`NiriLayoutEngine+PureLayoutBridge.swift:28`) is the single traversal entry
+point and maps every direction through `PureDirection(direction:orientation:)`
+(`:382`), so the one `ensureSelectionVisible` call at `:69` covers horizontal,
+vertical, and tabbed movement alike. All eight `ensureSelectionVisible` call
+sites in `NiriNavigation.swift` (`:103, :306, :331, :419, :558, :589, :654,
+:685`) already pass `.explicitNavigation`.
 
 ## Verification notes
 
