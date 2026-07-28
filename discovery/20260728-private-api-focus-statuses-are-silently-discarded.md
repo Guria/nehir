@@ -11,24 +11,26 @@ Plan a narrow Nehir-native diagnostic rather than porting upstream's 477-line
 private-API health subsystem. Do not add fallback behaviour until a real failure
 has been captured and its safe recovery is known.
 
-Verified against Nehir `main` at `64e0b98c` on 2026-07-28. This was surfaced by
-review of the SkyLight event-record hardening branch; the ignored returns
-predate that branch.
+Re-verified against Nehir `main` at `6bdd9b10` on 2026-07-28, after the
+SkyLight event-record hardening shipped in PR
+<https://github.com/apphane-dev/nehir/pull/187>. The hardening changed the
+record layout and added byte-level tests; it deliberately preserved all ignored
+statuses, so this observability gap remains open.
 
 ---
 
 ## The main focus path loses every status
 
-`Sources/Nehir/Core/PrivateAPIs.swift:55-57` posts the synthetic mouse-down and
+`Sources/Nehir/Core/PrivateAPIs.swift:81-85` posts the synthetic mouse-down and
 mouse-up records and explicitly discards both results:
 
 ```swift
 _ = SLPSPostEventRecordTo(&psn, &eventBytes)
-eventBytes[0x08] = 0x02
+KeyWindowEventRecord.setEventType(.mouseUp, in: &eventBytes)
 _ = SLPSPostEventRecordTo(&psn, &eventBytes)
 ```
 
-`Sources/Nehir/Core/PrivateAPIs.swift:60-65` handles the surrounding steps in
+`Sources/Nehir/Core/PrivateAPIs.swift:88-93` handles the surrounding steps in
 two different but equally silent ways:
 
 ```swift

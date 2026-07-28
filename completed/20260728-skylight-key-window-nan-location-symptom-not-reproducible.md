@@ -1,21 +1,28 @@
 # SkyLight key-window NaN location: pre-fix bytes confirmed, symptom not reproducible
 
-**Verdict up front.** The *code-shape* half of the
-[`20260728-upstream-post-roadmap-candidates.md`](20260728-upstream-post-roadmap-candidates.md)
-finding for `a4b8611a` / <https://github.com/BarutSRB/OmniWM/issues/505> is
-correct: Nehir did carry the byte-for-byte pre-fix key-window event record on its
+**Completed 2026-07-28.** The *code-shape* half of the
+[`20260728-upstream-post-roadmap-candidates.md`](../discovery/20260728-upstream-post-roadmap-candidates.md)
+finding for `a4b8611a` / <https://github.com/BarutSRB/OmniWM/issues/505> was
+correct: Nehir carried the byte-for-byte pre-fix key-window event record on its
 only key-window path. The *user-impact* half is **not supported**. The symptom
 described upstream — Chromium web-app (PWA) windows closing when the window
 manager is enabled or when focus is moved between windows — **could not be
 reproduced**, on Nehir `main` without the port *or* on upstream OmniWM v0.5.7
 itself, on the same macOS build as the upstream reporter.
 
-The port is therefore retained as **hardening only**, with no release note. It
-must not be described as fixing an observable defect.
+The port shipped as **hardening only**, with no release note, in
+<https://github.com/apphane-dev/nehir/pull/187>:
 
-Implementation lives on branch `patch/skylight-key-window-event-record`
-(`Sources/Nehir/Core/PrivateAPIs.swift`); move this document to `completed/` when
-that branch merges.
+- `0175a6d5` — finite `CGPoint(x: -1, y: -1)`, padded `0x100`-byte buffer with
+  declared length `0xF8`, and named event-record offsets in
+  `Sources/Nehir/Core/PrivateAPIs.swift`;
+- `6bdd9b10` — byte-layout regression coverage in
+  `Tests/NehirTests/SkyLightKeyWindowEventRecordTests.swift`, plus the test's
+  upstream provenance entry.
+
+The full gate passed after rebasing onto the merge-time `main`: **1491 tests in
+130 suites**; `mise run license:check` also passed. The code and release note do
+not claim that an observable Chromium defect was fixed.
 
 ---
 
@@ -45,7 +52,7 @@ mouse-derived event should carry a valid position.
 `makeKeyWindow` is the sole mechanism by which Nehir makes a specific window key
 — there is no AX-attribute alternative anywhere in the tree. It is reached as:
 
-- `Sources/Nehir/Core/PrivateAPIs.swift:88` — `focusWindow` posts the record.
+- `Sources/Nehir/Core/PrivateAPIs.swift:81-93` — `makeKeyWindow` posts the record and `focusWindow` invokes it.
 - `Sources/Nehir/Core/Controller/WMController.swift:42-44` — wired as
   `WindowFocusOperations.live.focusSpecificWindow`.
 - `Sources/Nehir/Core/Controller/WMController.swift:4141-4150` —
@@ -170,26 +177,28 @@ version is not recorded in the issue, and Chromium auto-updates. If the trigger
 was a Chromium-side defect since repaired, the symptom is unreproducible by
 anyone current, permanently.
 
-## What is still unverified
+## What remained unverified at merge
 
-The **fixed** build has never been exercised at runtime. Every observation above
-was made without the port applied. What is known about the change is that it
-compiles and that the full suite passes; its runtime behaviour is unobserved.
+The **fixed** build was not exercised at runtime before merge. Every observation
+above was made without the port applied. The change compiled, the byte-layout
+test was falsified against the pre-fix `0xF8`/NaN form, and the full suite passed;
+its runtime behaviour with real PWA windows remained unobserved.
 
-Because the symptom cannot be produced, the fix cannot be validated by its
-intended effect. The only check available is a negative one: run a build with the
-port and the same three web apps and confirm nothing regresses.
+Because the symptom cannot be produced, the hardening cannot be validated by its
+intended effect. The remaining negative check is to run a build carrying it with
+the same three web apps and confirm nothing regresses. This is post-merge runtime
+validation, not a claim that the upstream symptom ever existed in Nehir.
 
 Review of this path also exposed a separate, confirmed observability gap: all
 four fallible steps in the private focus sequence lose their `OSStatus`, so a
 runtime capture cannot say whether process lookup, front-process selection,
 mouse-down posting or mouse-up posting failed. That follow-up is intentionally
 separate from this hardening port; see
-[`20260728-private-api-focus-statuses-are-silently-discarded.md`](20260728-private-api-focus-statuses-are-silently-discarded.md).
+[`20260728-private-api-focus-statuses-are-silently-discarded.md`](../discovery/20260728-private-api-focus-statuses-are-silently-discarded.md).
 
 ## Consequence for the sweep record
 
-In [`20260728-upstream-post-roadmap-candidates.md`](20260728-upstream-post-roadmap-candidates.md),
+In [`20260728-upstream-post-roadmap-candidates.md`](../discovery/20260728-upstream-post-roadmap-candidates.md),
 `a4b8611a` was ranked tier-1 and described as *"highest confidence in the
 sweep"*. That ranking was derived entirely from static reading of the pre-fix
 bytes; no runtime check stood behind it. The code-shape half survives; the

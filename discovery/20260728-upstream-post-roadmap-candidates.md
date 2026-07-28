@@ -33,16 +33,18 @@ already-planned · 🟢 already-have / skip / N/A. Effort: XS / S / M / L.
 Twelve items are 🔴 with a source-cited pre-fix shape present in Nehir `main`.
 The three highest-confidence, lowest-effort ones:
 
-- **`a4b8611a` — Nehir's primary SkyLight focus path carries the byte-for-byte
-  pre-fix key-window event record** (`Sources/Nehir/Core/PrivateAPIs.swift:38-58`:
+- **`a4b8611a` — at sweep time, Nehir's primary SkyLight focus path carried the
+  byte-for-byte pre-fix key-window event record** (`Sources/Nehir/Core/PrivateAPIs.swift:38-58`:
   a `0xF8`-byte buffer with an all-`0xFF` NaN window-location block at
   `0x20..<0x30`). Upstream adapted AltTab v11.3.1's fix — pad to `0x100`, write a
   finite off-content `(-1,-1)`. XS.
-  **Erratum (2026-07-28, runtime).** The code-shape claim holds; the implied user
-  impact does not. The upstream symptom could not be reproduced on Nehir `main`
-  without the port, nor on upstream OmniWM v0.5.7 itself, on the same macOS build
-  as the reporter. Retained as hardening only, no release note. See
-  [`20260728-skylight-key-window-nan-location-symptom-not-reproducible.md`](20260728-skylight-key-window-nan-location-symptom-not-reproducible.md).
+  **Shipped 2026-07-28 as hardening only** in PR
+  <https://github.com/apphane-dev/nehir/pull/187>: implementation `0175a6d5`,
+  byte-layout tests `6bdd9b10`, no release note. The code-shape claim held; the
+  implied user impact did not. The upstream symptom could not be reproduced on
+  Nehir `main` without the port, nor on upstream OmniWM v0.5.7 itself, on the
+  same macOS build as the reporter. See
+  [`../completed/20260728-skylight-key-window-nan-location-symptom-not-reproducible.md`](../completed/20260728-skylight-key-window-nan-location-symptom-not-reproducible.md).
 - **`ac0a0287` — "Hide Empty Workspaces" drops the focused workspace from the bar.**
   `Sources/Nehir/UI/WorkspaceBar/WorkspaceBarDataSource.swift:151-155` filters on
   `hasBarOccupancy` *before* `activeWorkspaceId` is computed, so navigating to an
@@ -79,7 +81,7 @@ Recorded because lanes reached different conclusions and the resolution matters.
 | Item | Conflict | Resolution |
 | --- | --- | --- |
 | BarutSRB/OmniWM#498 / `a91f20e8` viewport clamp | The issue lane read it as 🟢 already covered by `completed/20260706-stable-viewport-on-window-close-recovery.md`. The Niri lane read the engine source and found the pre-fix shape present. | **🔴 stands.** The Niri lane checked all six candidate Nehir docs individually: every one is about the viewport moving when it should stay (over-eager reveal/recenter) or about *focus* recovery. Upstream's bug is the opposite polarity — the viewport fails to move and straddles vacated space. Net-new. |
-| BarutSRB/OmniWM#505 / `a4b8611a` Chrome PWA focus | The issue lane guessed 🟢 "probable N/A, upstream-regression-specific — unverified". The AX lane read `PrivateAPIs.swift`. | **🔴 stands** *(as written; superseded — see erratum)*. Nehir carries the pre-fix bytes regardless of upstream's regression history; the fix is to the shared AltTab-derived event record, not to upstream's 0.5.7 admission cluster. **Erratum (2026-07-28, runtime):** the issue lane's instinct was closer. The bytes are pre-fix, but the symptom is not reproducible here — including on upstream v0.5.7 itself — so the item is hardening, not a defect fix. [`20260728-skylight-key-window-nan-location-symptom-not-reproducible.md`](20260728-skylight-key-window-nan-location-symptom-not-reproducible.md) |
+| BarutSRB/OmniWM#505 / `a4b8611a` Chrome PWA focus | The issue lane guessed 🟢 "probable N/A, upstream-regression-specific — unverified". The AX lane read `PrivateAPIs.swift`. | **Superseded.** The static finding was real — Nehir carried the pre-fix bytes — but the issue lane's runtime caution was closer. The symptom is not reproducible here, including on upstream v0.5.7 itself. The record change therefore shipped as hardening, not a defect fix (`0175a6d5` + `6bdd9b10`). [`../completed/20260728-skylight-key-window-nan-location-symptom-not-reproducible.md`](../completed/20260728-skylight-key-window-nan-location-symptom-not-reproducible.md) |
 | BarutSRB/OmniWM#488 follow-focus on up/down moves | Issue lane: 🟡 "XS verify, not verified". Focus lane read all five move paths. | **🔴 confirmed.** Three of five paths ignore the setting. |
 | BarutSRB/OmniWM#479 trackpad scroll focus | Issue lane: 🟡 "gesture lane, unverified". Focus lane verified. | **🟢 for the feature** (Nehir has it and richer), **🔴 for `7f300c31`(a)** — Nehir also focuses on *cancelled/aborted* gestures. |
 | BarutSRB/OmniWM#493 / BarutSRB/OmniWM#486 multitouch | Issue lane: 🟡 unverified. Bar/input lane read the source. | **🔴 confirmed** — see the silent-deafness path below. |
@@ -103,7 +105,7 @@ defects, three of which are 🔴.
 
 | Upstream commit | One-line change | Nehir-equivalent already present? (file:line) | Verdict | Effort | Nehir files |
 | --- | --- | --- | --- | --- | --- |
-| `a4b8611a` Fix Chrome PWA focus event regression (BarutSRB/OmniWM#505) | Adapt AltTab v11.3.1: pad the SkyLight key-window event record to `0x100` and replace the all-`0xFF` (NaN) window-location bytes with a finite off-content `(-1,-1)`. | **No — Nehir carries the exact pre-fix bytes.** `Sources/Nehir/Core/PrivateAPIs.swift:38-58` (`[UInt8](repeating: 0, count: 0xF8)`, `for i in 0x20..<0x30 { eventBytes[i] = 0xFF }`). This is Nehir's main SkyLight focus path (`focusWindow` at `:60-66`, wired at `Sources/Nehir/Core/Controller/WMController.swift:43`) and is also used by the command palette (`Sources/Nehir/UI/CommandPalette/CommandPaletteController.swift:1041`). **Erratum (2026-07-28, runtime):** symptom not reproducible on Nehir `main` without the port nor on upstream v0.5.7; upstream issue has zero comments and no confirmation. Downgraded to hardening — [`20260728-skylight-key-window-nan-location-symptom-not-reproducible.md`](20260728-skylight-key-window-nan-location-symptom-not-reproducible.md). | **🔴 → 🟡** (hardening) | XS | `Sources/Nehir/Core/PrivateAPIs.swift` |
+| `a4b8611a` Fix Chrome PWA focus event regression (BarutSRB/OmniWM#505) | Adapt AltTab v11.3.1: pad the SkyLight key-window event record to `0x100` and replace the all-`0xFF` (NaN) window-location bytes with a finite off-content `(-1,-1)`. | **At sweep time: no — Nehir carried the exact pre-fix bytes.** `Sources/Nehir/Core/PrivateAPIs.swift:38-58` (`[UInt8](repeating: 0, count: 0xF8)`, `for i in 0x20..<0x30 { eventBytes[i] = 0xFF }`). This is Nehir's main SkyLight focus path (`focusWindow` at `:60-66`, wired at `Sources/Nehir/Core/Controller/WMController.swift:43`) and is also used by the command palette (`Sources/Nehir/UI/CommandPalette/CommandPaletteController.swift:1041`). **Shipped 2026-07-28 as hardening only:** symptom not reproducible on Nehir `main` without the port nor on upstream v0.5.7; upstream issue has zero comments and no confirmation. `0175a6d5` landed the record, `6bdd9b10` landed byte-layout tests; detail: [`../completed/20260728-skylight-key-window-nan-location-symptom-not-reproducible.md`](../completed/20260728-skylight-key-window-nan-location-symptom-not-reproducible.md). | **🟢 shipped** (hardening) | XS | `Sources/Nehir/Core/PrivateAPIs.swift` |
 | `7ea45238` Fix floating window admission and focus (BarutSRB/OmniWM#511, BarutSRB/OmniWM#508) | Normalize unsupported fullscreen-button AX evidence (absent vs. genuine fetch failure); tighten `resolvedAttribute` to require an actual `AXUIElement`; gate size-settable admission deferral on tiling; focus the newest create context during a full rescan. | **Split — L1-E is 🔴.** Nehir has the "non-`AXUIElement` fullscreen-button value ⇒ absent" half (`Sources/Nehir/Core/Ax/AXWindow.swift:719-728`) but not the `resolvedAttribute` tightening, not the absent-vs-failed distinction, and no `shouldDeferAdmission` equivalent. | **🔴** (L1-E) / 🟡 (L1-F, L1-G) | XS / M | `Sources/Nehir/Core/Ax/AXWindow.swift`, `Sources/Nehir/Core/Controller/AXEventHandler.swift` |
 | `fa25338e` Harden AX window identity and admission lifecycle | Bind observer subscriptions, frame applications, rebind cleanup and admission retries to exact AX window *incarnations*. | **The observer-incarnation subset is a present Nehir bug (L1-D).** The rest lives in upstream's absent `WindowAdmission*` subsystem; Nehir has zero occurrences of an incarnation concept. | **🔴** (L1-D) / 🟡 (rest) | S / L | `Sources/Nehir/Core/Ax/AppAXContext.swift` |
 | `fbf8d0f9` Bound AX full-rescan discovery | Route evidence-backed apps through persistent AX contexts, probe evidence-free regular apps with bounded one-shot enumeration, carry captured evidence so MainActor reduction does no live AX reads. | **No — Nehir is the pre-fix design.** `fullRescanEnumerationSnapshot()` enumerates only PIDs with WindowServer evidence (`Sources/Nehir/Core/Ax/AXManager.swift:496-580`); the reduction loop does live AX reads per candidate on the MainActor (`Sources/Nehir/Core/Controller/LayoutRefreshController.swift:1400-1421` → `Sources/Nehir/Core/Controller/WMController.swift:2724-2749`). | **🟡** (L1-A / L1-B) | L | `AXManager.swift`, `LayoutRefreshController.swift`, `WMController.swift` |
@@ -588,7 +590,7 @@ shape in `main` and is XS–S.
 **Tier 1 — small, confirmed, independent**
 
 1. **~~🔴~~ 🟡 `a4b8611a` SkyLight key-window event record (XS) — shipped as hardening.**
-   Nehir carries the byte-for-byte pre-fix record on its primary focus path
+   At sweep time, Nehir carried the byte-for-byte pre-fix record on its primary focus path
    (`Sources/Nehir/Core/PrivateAPIs.swift:38-58`, reached from `WMController.swift:43`).
    Pad the buffer to `0x100`, declare length `0xF8`, write a finite `(-1,-1)` instead
    of the `0x20..<0x30` NaN block.
@@ -596,10 +598,12 @@ shape in `main` and is XS–S.
    sweep" on static reading alone. The symptom is **not reproducible** — not on
    Nehir `main` without the port, and not on upstream OmniWM v0.5.7 itself, on the
    reporter's own macOS build. The upstream issue has zero comments and no
-   diagnosis. Implemented on `patch/skylight-key-window-event-record` as hardening
-   with no release note; do not describe it as fixing an observable defect. Detail
-   and the generalisable lesson:
-   [`20260728-skylight-key-window-nan-location-symptom-not-reproducible.md`](20260728-skylight-key-window-nan-location-symptom-not-reproducible.md).
+   diagnosis. **Shipped 2026-07-28 on `main`** as `0175a6d5` (implementation)
+   and `6bdd9b10` (byte-layout tests), via PR
+   <https://github.com/apphane-dev/nehir/pull/187>, with a level-`none`
+   changeset. Do not describe it as fixing an observable defect. Detail and the
+   generalisable lesson:
+   [`../completed/20260728-skylight-key-window-nan-location-symptom-not-reproducible.md`](../completed/20260728-skylight-key-window-nan-location-symptom-not-reproducible.md).
 2. **~~🔴~~ `ac0a0287` Hide Empty Workspaces drops the focused workspace (XS) — shipped.**
    Filter on `hasBarOccupancy || id == activeWorkspaceId` at
    `Sources/Nehir/UI/WorkspaceBar/WorkspaceBarDataSource.swift:151-155`, and decide
