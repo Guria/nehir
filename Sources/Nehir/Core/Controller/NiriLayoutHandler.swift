@@ -867,7 +867,7 @@ enum NiriWindowMoveResult {
                 workingFrame: pass.insetFrame,
                 gaps: pass.gap,
                 fromContainerIndex: removal.removalResult.fromIndexForVisibility,
-            revealTrigger: .automatic
+                revealTrigger: .automatic
             )
             if abs(state.viewOffsetPixels.current() - offsetBefore) > 1 {
                 viewportNeedsRecalc = true
@@ -1013,7 +1013,7 @@ enum NiriWindowMoveResult {
                     workingFrame: pass.insetFrame,
                     gaps: pass.gap,
                     fromContainerIndex: state.activeColumnIndex,
-                revealTrigger: .automatic
+                    revealTrigger: .automatic
                 )
 
                 if shouldRestorePrevOffset {
@@ -1436,7 +1436,7 @@ enum NiriWindowMoveResult {
                 state: &state,
                 workingFrame: controller.insetWorkingFrame(for: monitor),
                 gaps: gap,
-            revealTrigger: .automatic
+                revealTrigger: .automatic
             )
         }
         activateNode(
@@ -1489,7 +1489,7 @@ enum NiriWindowMoveResult {
                         state: &state,
                         workingFrame: controller.insetWorkingFrame(for: monitor),
                         gaps: controller.gapSize(for: monitor),
-                    revealTrigger: .automatic
+                        revealTrigger: .automatic
                     )
                 }
                 activateNode(
@@ -2224,7 +2224,7 @@ enum NiriWindowMoveResult {
                 state: &state,
                 workingFrame: workingFrame,
                 gaps: gap,
-            revealTrigger: .automatic
+                revealTrigger: .automatic
             )
         }
 

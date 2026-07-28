@@ -9,13 +9,19 @@ import Foundation
 
 /// Declares where a viewport reveal came from.
 ///
-/// This does **not** decide viewport scroll lock: a target outside the viewport is
-/// revealed regardless of trigger, and a partially visible one is left alone
-/// regardless of trigger. Lock is answered by visibility alone — see
-/// `scrollToReveal`.
+/// This does **not** decide viewport scroll lock. On a locked workspace a target
+/// outside the viewport is revealed and a partially visible one is left alone, both
+/// regardless of trigger; on an unlocked workspace a `.clipped` target is revealed per
+/// `revealStyle`, again regardless of trigger. Lock is answered by visibility alone.
 ///
-/// What the trigger still decides is re-centring an already fully visible column,
-/// which is a placement preference rather than a reveal.
+/// What the trigger does decide is re-centring an **already fully visible**
+/// non-filling column, which is a placement preference rather than a reveal: allowed
+/// for `.explicitNavigation`, and for `.automatic` only when the call site passes
+/// `allowFullyVisibleAutomaticRecenter`, in both cases only when
+/// `revealStyle == .auto`. Re-centring a fully visible column that fills the viewport
+/// is viewport maintenance and runs for either trigger.
+///
+/// See `scrollToReveal` for the full matrix.
 enum RevealTrigger {
     /// Reveals that the user did not directly ask for: window close recovery,
     /// new-window arrival, selection re-resolution, AX focus confirmation, and the

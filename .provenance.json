@@ -118,7 +118,9 @@
         "Tests/NehirTests/DockAutohideReservationTests.swift",
         "Tests/NehirTests/ColumnWidthCycleViewportAnchorTests.swift",
         "Tests/NehirTests/QuantizationRefusalStreakTests.swift",
-        "Tests/NehirTests/QuickTerminalCloseAnchorTests.swift"
+        "Tests/NehirTests/QuickTerminalCloseAnchorTests.swift",
+        "Tests/NehirTests/ScrollLockRevealPolicyTests.swift",
+        "Tests/NehirTests/ScrollLockFocusCommandRevealTests.swift"
       ],
       "copyright": [
         "2026 Aleksei Gurianov and Nehir contributors"

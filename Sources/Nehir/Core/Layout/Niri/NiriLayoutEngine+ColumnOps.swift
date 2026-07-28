@@ -208,7 +208,7 @@ extension NiriLayoutEngine {
             state: &state,
             workingFrame: workingFrame,
             gaps: gaps,
-        revealTrigger: .automatic
+            revealTrigger: .automatic
         )
 
         return true
@@ -642,7 +642,7 @@ extension NiriLayoutEngine {
             orientation: orientation,
             fromContainerIndex: previousActiveColumnIndex,
             previousActiveContainerPosition: previousActiveColumnPosition,
-        revealTrigger: .automatic
+            revealTrigger: .automatic
         )
 
         if case .horizontalConsume = purePlan {
@@ -890,7 +890,7 @@ extension NiriLayoutEngine {
             workingFrame: workingFrame,
             gaps: gaps,
             orientation: orientation,
-        revealTrigger: .automatic
+            revealTrigger: .automatic
         )
 
         return true
