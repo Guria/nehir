@@ -157,6 +157,30 @@
         "hash": "713280e"
       }
     ],
+    "Sources/Nehir/Core/Controller/WindowActionHandler.swift": [
+      {
+        "repo": "https://github.com/BarutSRB/OmniWM",
+        "hash": "ea490f8e"
+      }
+    ],
+    "Sources/Nehir/Core/Controller/WorkspaceNavigationHandler.swift": [
+      {
+        "repo": "https://github.com/BarutSRB/OmniWM",
+        "hash": "b35d39d4"
+      },
+      {
+        "repo": "https://github.com/BarutSRB/OmniWM",
+        "hash": "6d516923"
+      },
+      {
+        "repo": "https://github.com/BarutSRB/OmniWM",
+        "hash": "9064f502"
+      },
+      {
+        "repo": "https://github.com/BarutSRB/OmniWM",
+        "hash": "e75bc2a5"
+      }
+    ],
     "Sources/Nehir/Core/Multitouch/MultitouchBinding.swift": [
       {
         "repo": "https://github.com/BarutSRB/OmniWM",
