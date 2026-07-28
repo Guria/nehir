@@ -208,6 +208,12 @@
         "repo": "https://github.com/BarutSRB/OmniWM",
         "hash": "ac0a0287"
       }
+    ],
+    "Tests/NehirTests/SkyLightKeyWindowEventRecordTests.swift": [
+      {
+        "repo": "https://github.com/BarutSRB/OmniWM",
+        "hash": "a4b8611a"
+      }
     ]
   }
 }
