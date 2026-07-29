@@ -543,7 +543,9 @@ final class WindowActionHandler {
         // The refresh may settle long after this call — another navigation, a
         // workspace switch, or a window move can land in between. Re-verify
         // that this is still the latest navigation, its workspace remains the
-        // interaction workspace, and the target window still lives there.
+        // interaction workspace, the target window still lives there, and the
+        // user has not explicitly established a different window meanwhile.
+        let explicitStampAtSchedule = controller.axEventHandler.lastExplicitManagedConfirmationToken
         controller.layoutRefreshController
             .commitWorkspaceTransition(reason: .workspaceTransition) { [weak self, weak controller] in
                 guard let self,
@@ -551,13 +553,31 @@ final class WindowActionHandler {
                       self.navigationGeneration == expectedNavigationGeneration,
                       controller.interactionWorkspace()?.id == workspaceId,
                       controller.workspaceManager.visibleWorkspaceIds().contains(workspaceId),
-                      controller.workspaceManager.entry(for: token)?.workspaceId == workspaceId
+                      controller.workspaceManager.entry(for: token)?.workspaceId == workspaceId,
+                      Self.completionFocusStillCurrent(
+                          token: token,
+                          stampAtSchedule: explicitStampAtSchedule,
+                          stampNow: controller.axEventHandler.lastExplicitManagedConfirmationToken
+                      )
                 else {
                     return
                 }
                 controller.focusWindow(token, reason: .windowActionRefreshCompletion)
             }
         return true
+    }
+
+    /// A deferred window-action focus completion is stale once the user has
+    /// explicitly confirmed a different window between scheduling and firing —
+    /// observed as a settle-time `windowActionRefreshCompletion` pulling focus
+    /// back off the terminal window the user had just switched to. The
+    /// completion's own confirmation of `token` keeps it current.
+    private static func completionFocusStillCurrent(
+        token: WindowToken,
+        stampAtSchedule: WindowToken?,
+        stampNow: WindowToken?
+    ) -> Bool {
+        stampNow == stampAtSchedule || stampNow == token
     }
 
     @discardableResult
@@ -679,11 +699,21 @@ final class WindowActionHandler {
         if let sourceMonitor = controller.workspaceManager.monitor(for: sourceWorkspaceId) {
             controller.layoutRefreshController.stopScrollAnimation(for: sourceMonitor.displayId)
         }
+        let explicitStampAtSchedule = controller.axEventHandler.lastExplicitManagedConfirmationToken
         controller.layoutRefreshController.commitWorkspaceTransition(
             affectedWorkspaces: [sourceWorkspaceId, targetWorkspaceId],
             reason: .workspaceTransition
         ) { [weak controller] in
-            controller?.focusWindow(token, reason: .windowActionRefreshCompletion)
+            guard let controller,
+                  Self.completionFocusStillCurrent(
+                      token: token,
+                      stampAtSchedule: explicitStampAtSchedule,
+                      stampNow: controller.axEventHandler.lastExplicitManagedConfirmationToken
+                  )
+            else {
+                return
+            }
+            controller.focusWindow(token, reason: .windowActionRefreshCompletion)
         }
         controller.layoutRefreshController.startScrollAnimation(for: targetWorkspaceId)
         return true
@@ -708,8 +738,18 @@ final class WindowActionHandler {
                 rememberedFocusToken: rememberedFocusToken ?? token
             )
         )
+        let explicitStampAtSchedule = controller.axEventHandler.lastExplicitManagedConfirmationToken
         controller.layoutRefreshController.requestRefresh(reason: .layoutCommand) { [weak controller] in
-            controller?.focusWindow(token, reason: .windowActionRefreshCompletion)
+            guard let controller,
+                  Self.completionFocusStillCurrent(
+                      token: token,
+                      stampAtSchedule: explicitStampAtSchedule,
+                      stampNow: controller.axEventHandler.lastExplicitManagedConfirmationToken
+                  )
+            else {
+                return
+            }
+            controller.focusWindow(token, reason: .windowActionRefreshCompletion)
         }
         if startNiriScrollAnimation {
             controller.layoutRefreshController.startScrollAnimation(for: workspaceId)

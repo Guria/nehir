@@ -39,6 +39,7 @@ private enum PreserveActiveViewportReason: String {
     case springInFlight = "spring_in_flight"
     case alreadyConfirmedFocusedWindowChanged = "already_confirmed_focused_window_changed"
     case closeRecoveryPin = "close_recovery_pin"
+    case causelessExternalOverlayClose = "causeless_external_overlay_close"
     case none
 
     var shouldPreserve: Bool {
@@ -140,6 +141,34 @@ struct NiriCreateFocusTraceEvent: Equatable {
             reason: FocusWindowReason
         )
         case activationSourceObserved(pid: pid_t, source: ActivationEventSource, selfFrontingAgeMs: Int?)
+        /// The arbitration inputs behind one managed-activation confirmation:
+        /// which token confirms, whether a managed request matched, whether the
+        /// event was classified as a cause-less external app-level activation
+        /// (no matching request, app-level source, not an echo of Nehir's own
+        /// fronting), and the explicit-confirmation stamp before this event.
+        /// This is the record that tells an overlay owner's "restore the
+        /// previous app" call apart from a genuine click or Cmd-Tab in a
+        /// capture — per-event they are indistinguishable, so the reader needs
+        /// the classification and the stamp state to follow the arbitration.
+        case managedConfirmationClassified(
+            token: WindowToken,
+            source: ActivationEventSource,
+            causelessExternal: Bool,
+            activeRequestToken: WindowToken?,
+            selfFrontingAgeMs: Int?,
+            explicitStampToken: WindowToken?,
+            explicitStampAgeMs: Int?,
+            shouldConfirm: Bool
+        )
+        /// The rule engine recognized a window as an app's overlay (e.g. the
+        /// Ghostty quick terminal). The destroy of this exact window id is the
+        /// overlay-teardown signal the close-anchor assert keys on.
+        case overlayWindowRecognized(token: WindowToken, ruleName: String)
+        /// A destroy event arrived for a window previously recognized as an
+        /// overlay. `path` names the branch of `handleWindowDestroyed` that
+        /// consumed it — only the `no_candidate` branch reaches the
+        /// close-anchor assert, so any other value explains a silent assert.
+        case overlayDestroyObserved(pid: pid_t, windowId: Int, path: String)
         case followFocusToParkedWindow(token: WindowToken, workspaceId: WorkspaceDescriptor.ID, decision: String)
         /// The macOS-observed reality for a focus Nehir just confirmed. Emitted
         /// alongside `focus_confirmed` so a reader can tell Nehir's *intent*
@@ -407,6 +436,27 @@ extension NiriCreateFocusTraceEvent: CustomStringConvertible {
         case let .activationSourceObserved(pid, source, selfFrontingAgeMs):
             "activation_source_observed pid=\(pid) source=\(source.rawValue) "
                 + "self_fronting_age_ms=\(selfFrontingAgeMs.map(String.init) ?? "nil")"
+        case let .managedConfirmationClassified(
+            token,
+            source,
+            causelessExternal,
+            activeRequestToken,
+            selfFrontingAgeMs,
+            explicitStampToken,
+            explicitStampAgeMs,
+            shouldConfirm
+        ):
+            "managed_confirmation_classified token=\(token) source=\(source.rawValue) "
+                + "causeless_external=\(causelessExternal) "
+                + "active_request=\(activeRequestToken.map(String.init(describing:)) ?? "nil") "
+                + "self_fronting_age_ms=\(selfFrontingAgeMs.map(String.init) ?? "nil") "
+                + "explicit_stamp=\(explicitStampToken.map(String.init(describing:)) ?? "nil") "
+                + "explicit_stamp_age_ms=\(explicitStampAgeMs.map(String.init) ?? "nil") "
+                + "should_confirm=\(shouldConfirm)"
+        case let .overlayWindowRecognized(token, ruleName):
+            "overlay_window_recognized token=\(token) rule=\(ruleName)"
+        case let .overlayDestroyObserved(pid, windowId, path):
+            "overlay_destroy_observed pid=\(pid) window=\(windowId) path=\(path)"
         case let .followFocusToParkedWindow(token, workspaceId, decision):
             "follow_focus_to_parked_window token=\(token) workspace=\(workspaceId.uuidString) decision=\(decision)"
         case let .focusReality(
@@ -652,6 +702,35 @@ final class AXEventHandler: CGSEventDelegate {
                 metadataSummary: String
             )
             case matched(policy: String, elapsedMillis: Int)
+            /// A one-sided burst's flush was pushed back because the
+            /// counterpart event's pipeline for the same pid was still in
+            /// flight — a same-pid create still in its AX-materialization
+            /// retries, or a destroy still in liveness verification. Without
+            /// the wait the two halves of one identity swap flush in separate
+            /// bursts and can never pair.
+            case flushExtended(
+                policy: String,
+                reason: String,
+                extensionCount: Int,
+                createCount: Int,
+                destroyCount: Int
+            )
+            /// One destroy×create pair's pairing verdict, emitted for every
+            /// pair of an unmatched burst. `verdict=match` on two or more
+            /// lines of one flush means the burst failed on *ambiguity*, not
+            /// on a metadata mismatch — the distinction that decides whether
+            /// the matcher needs better keys or multi-pair support.
+            /// `wsAlive` is each window's WindowServer liveness at flush time:
+            /// a dead create is a transient that should never have been in
+            /// the pairing pool.
+            case matchDiagnostics(
+                policy: String,
+                destroyToken: WindowToken,
+                createToken: WindowToken,
+                verdict: String,
+                destroyWsAlive: Bool,
+                createWsAlive: Bool
+            )
         }
 
         let timestamp: TimeInterval
@@ -718,6 +797,17 @@ final class AXEventHandler: CGSEventDelegate {
                 return "replayManagedReplacementEvents.destroy \(prefix) token=\(token) windowId=\(windowId) monitor=\(String(describing: monitorId)) mode=\(mode) \(metadataSummary)"
             case let .matched(policy, elapsedMillis):
                 return "managedReplacement.matched \(prefix) policy=\(policy) elapsedMillis=\(elapsedMillis)"
+            case let .flushExtended(policy, reason, extensionCount, createCount, destroyCount):
+                return "managedReplacement.flushExtended \(prefix) policy=\(policy) reason=\(reason) extension=\(extensionCount) creates=\(createCount) destroys=\(destroyCount)"
+            case let .matchDiagnostics(
+                policy,
+                destroyToken,
+                createToken,
+                verdict,
+                destroyWsAlive,
+                createWsAlive
+            ):
+                return "managedReplacement.matchDiagnostics \(prefix) policy=\(policy) destroy=\(destroyToken) create=\(createToken) verdict=\(verdict) destroyWsAlive=\(destroyWsAlive) createWsAlive=\(createWsAlive)"
             }
         }
     }
@@ -842,6 +932,10 @@ final class AXEventHandler: CGSEventDelegate {
         let firstEventUptime: TimeInterval
         var creates: [PendingManagedCreate] = []
         var destroys: [PendingManagedDestroy] = []
+        // How many times a one-sided flush was pushed back to wait for the
+        // counterpart event's pipeline (create retries / destroy liveness
+        // verification) to resolve.
+        var flushExtensionCount: Int = 0
 
         mutating func append(create: PendingManagedCreate) {
             guard !creates.contains(where: { $0.candidate.token == create.candidate.token }) else { return }
@@ -979,6 +1073,14 @@ final class AXEventHandler: CGSEventDelegate {
     // of on time-limited evidence recorded when the overlay opened — that
     // evidence has usually expired by the time the destroy arrives.
     private var recognizedOverlayWindowIdsByPid: [pid_t: Set<Int>] = [:]
+    // When a recognized overlay window's destroy was last observed, per pid.
+    // Together with WindowServer liveness of the recognized ids this scopes
+    // overlay-teardown protections to moments an overlay can actually cause.
+    private var recentRecognizedOverlayDestroyByPid: [pid_t: TimeInterval] = [:]
+    // When a recognized overlay window was last observed ordered in on
+    // screen. A quick-terminal hide is orderOut without a destroy, so this
+    // stamp is the only evidence that an overlay was up moments ago.
+    private var lastOverlayOrderedInByPid: [pid_t: TimeInterval] = [:]
     private var focusedWindowLossClosePrecursorByPid: [pid_t: FocusedWindowLossClosePrecursor] = [:]
     private var sameAppRecoveryRedirectLatches: [SameAppRecoveryRedirectLatchKey: SameAppRecoveryRedirectLatch] = [:]
     private static let parkedFocusFollowDedupTTL: TimeInterval = 1.5
@@ -1014,6 +1116,15 @@ final class AXEventHandler: CGSEventDelegate {
     // token store: it annotates the existing confirmation flow and is only
     // consulted against the live state plus overlay-lifecycle evidence.
     private var lastExplicitManagedConfirmation: (token: WindowToken, at: TimeInterval)?
+
+    /// The token of the last explicit confirmation, for staleness checks by
+    /// deferred focus completions: a window-action or transition completion
+    /// captured before scheduling and compared on firing tells whether the
+    /// user explicitly established a different window in between — in which
+    /// case the completion's focus must yield rather than stomp it.
+    var lastExplicitManagedConfirmationToken: WindowToken? {
+        lastExplicitManagedConfirmation?.token
+    }
 
     func recordSelfInitiatedFronting(pid: pid_t) {
         recentSelfFrontingByPid[pid] = managedReplacementCurrentUptime()
@@ -1125,6 +1236,8 @@ final class AXEventHandler: CGSEventDelegate {
         recentSameAppTeardownByPid.removeAll()
         overlayCapablePids.removeAll()
         recognizedOverlayWindowIdsByPid.removeAll()
+        recentRecognizedOverlayDestroyByPid.removeAll()
+        lastOverlayOrderedInByPid.removeAll()
         focusedWindowLossClosePrecursorByPid.removeAll()
         sameAppRecoveryRedirectLatches.removeAll()
         recentParkedFocusFollowByToken.removeAll()
@@ -1351,6 +1464,8 @@ final class AXEventHandler: CGSEventDelegate {
         recentSameAppTeardownByPid.removeAll()
         overlayCapablePids.removeAll()
         recognizedOverlayWindowIdsByPid.removeAll()
+        recentRecognizedOverlayDestroyByPid.removeAll()
+        lastOverlayOrderedInByPid.removeAll()
         focusedWindowLossClosePrecursorByPid.removeAll()
         sameAppRecoveryRedirectLatches.removeAll()
         recentParkedFocusFollowByToken.removeAll()
@@ -1933,7 +2048,7 @@ final class AXEventHandler: CGSEventDelegate {
         subscribeToWindows(windowIds)
     }
 
-    func drainDeferredCreatedWindows() async {
+    func drainDeferredCreatedWindows() {
         guard !deferredCreatedWindowOrder.isEmpty else { return }
 
         let deferredWindowIds = deferredCreatedWindowOrder
@@ -2223,7 +2338,14 @@ final class AXEventHandler: CGSEventDelegate {
     ) {
         pendingDestroyLivenessVerificationTasks[token]?.cancel()
         let task = Task { @MainActor [weak self] in
-            defer { self?.pendingDestroyLivenessVerificationTasks[token] = nil }
+            // A suppressed keep hands the token to a freshly scheduled
+            // verification, which owns the dictionary slot from that point on.
+            var rescheduledFollowUp = false
+            defer {
+                if !rescheduledFollowUp {
+                    self?.pendingDestroyLivenessVerificationTasks[token] = nil
+                }
+            }
             try? await Task.sleep(for: Self.postCreateLifecycleVerificationDelay)
             guard !Task.isCancelled,
                   let self,
@@ -2251,25 +2373,22 @@ final class AXEventHandler: CGSEventDelegate {
                 }
             }
             let shouldRemove: Bool
-            if windowServerAlive {
+            var keepReason: String?
+            if windowServerAlive, axEnumerationSucceededAndMissingToken {
                 // AX disappearance while the WindowServer still lists the
                 // window normally means the window really is gone (AX is the
                 // authoritative oracle for app-level window lifetime), so it
-                // is removed.
-                //
-                // The exception is an app tearing an overlay down: Ghostty
-                // transiently drops its regular window from the AX tree while
-                // the quick terminal closes, and a probe landing in that blind
-                // moment removed a live, focused window — handing its focus,
-                // the layout selection and the command target to a neighbour.
-                // Keep the window while that overlay teardown is in progress;
-                // it is then removed by the authoritative WindowServer signal
-                // if it really closed, or by the rescan's consecutive-miss
-                // sweep. Evidence-gated, so no timer and no effect on ordinary
-                // window closes.
-                let overlayTeardownInProgress = self.overlayCapablePids.contains(token.pid)
-                    && self.hasOverlayLifecycleEvidence(for: token.pid)
-                shouldRemove = axEnumerationSucceededAndMissingToken && !overlayTeardownInProgress
+                // is removed. The exception — an overlay teardown's transient
+                // AX blind moment — is decided by
+                // `overlayTeardownKeepReason(for:)`. A suppressed keep is
+                // never terminal: it reschedules this verification, which
+                // converges once AX resolves the window again (genuinely
+                // alive) or the overlay evidence expires (genuinely gone,
+                // removed through the funnel below).
+                keepReason = self.overlayTeardownKeepReason(for: token)
+                shouldRemove = keepReason == nil
+            } else if windowServerAlive {
+                shouldRemove = false
             } else if confirmAXWhenWindowServerMissing, axEnumerationContainsToken {
                 shouldRemove = false
             } else {
@@ -2279,16 +2398,6 @@ final class AXEventHandler: CGSEventDelegate {
                   controller.workspaceManager.entry(for: token) != nil
             else {
                 return
-            }
-            if windowServerAlive, axEnumerationSucceededAndMissingToken {
-                // The window is at least *probably* closing (AX already dropped
-                // it): arm the same-app close evidence now so the
-                // churn-suppression gates (e.g. same-app re-home to an
-                // inactive workspace) have their evidence when the native
-                // churn arrives moments later. A false alarm merely leaves a
-                // short-lived, harmless evidence record behind.
-                self.recordRecentSameAppWindowClose(pid: token.pid)
-                self.recordRecentSameAppTeardown(pid: token.pid)
             }
             if shouldRemove {
                 self.recordDestroyLivenessVerification(
@@ -2302,7 +2411,7 @@ final class AXEventHandler: CGSEventDelegate {
                     )
                 )
                 AXWindowService.invalidateCachedTitle(windowId: windowId)
-                self.handleRemoved(token: token)
+                self.finishVerifiedDestroyRemoval(token: token, windowId: windowId)
             } else {
                 self.recordDestroyLivenessVerification(
                     DestroyLivenessVerificationTrace(
@@ -2311,12 +2420,49 @@ final class AXEventHandler: CGSEventDelegate {
                         windowServerAlive: windowServerAlive,
                         axEnumeration: axEnumerationDescription,
                         outcome: "keep",
-                        reason: axEnumerationContainsToken ? "ax_contains_token" : "window_server_alive"
+                        reason: keepReason
+                            ?? (axEnumerationContainsToken ? "ax_contains_token" : "window_server_alive")
                     )
                 )
+                if keepReason != nil {
+                    rescheduledFollowUp = true
+                    self.scheduleDestroyLivenessVerification(
+                        for: token,
+                        origin: origin,
+                        confirmAXWhenWindowServerMissing: confirmAXWhenWindowServerMissing
+                    )
+                }
             }
         }
         pendingDestroyLivenessVerificationTasks[token] = task
+    }
+
+    /// Decides whether a deferred destroy verification — WindowServer surface
+    /// still alive, AX enumeration no longer containing the token — must keep
+    /// the entry instead of removing it. Returns the keep reason, or nil to
+    /// remove.
+    ///
+    /// An app tearing an overlay down (Ghostty's quick terminal) transiently
+    /// drops its regular window from the AX tree; a probe landing in that
+    /// blind moment used to remove a live, focused window — handing its focus,
+    /// the layout selection and the command target to a neighbour. So the
+    /// entry is kept while overlay-lifecycle evidence is fresh — unless a
+    /// same-pid replacement create is already pending in the correlation burst
+    /// for this entry's workspace: a pending create is affirmative evidence
+    /// that the disappearance is identity churn (a tab switch swapping window
+    /// ids), and keeping the old entry then leaks a dead column beside the
+    /// admitted successor.
+    private func overlayTeardownKeepReason(for token: WindowToken) -> String? {
+        guard overlayWindowLifecycleActive(for: token.pid) else { return nil }
+
+        let samePidReplacementCreatePending = controller?.workspaceManager.entry(for: token)
+            .map { entry in
+                let key = ManagedReplacementKey(pid: token.pid, workspaceId: entry.workspaceId)
+                return !(pendingManagedReplacementBursts[key]?.creates.isEmpty ?? true)
+            } ?? false
+        guard !samePidReplacementCreatePending else { return nil }
+
+        return "overlay_teardown_in_progress"
     }
 
     private func cancelDestroyLivenessVerification(for token: WindowToken) {
@@ -3248,7 +3394,13 @@ final class AXEventHandler: CGSEventDelegate {
             return
         }
         overlayCapablePids.insert(token.pid)
-        recognizedOverlayWindowIdsByPid[token.pid, default: []].insert(token.windowId)
+        let inserted = recognizedOverlayWindowIdsByPid[token.pid, default: []]
+            .insert(token.windowId).inserted
+        if inserted {
+            recordNiriCreateFocusTrace(
+                .init(kind: .overlayWindowRecognized(token: token, ruleName: name))
+            )
+        }
     }
 
     func isOverlayCapablePidForTests(_ pid: pid_t) -> Bool {
@@ -3730,8 +3882,14 @@ final class AXEventHandler: CGSEventDelegate {
         // overlay recovery evidence.
         let recentSameAppClose = hasRecentSameAppWindowClose(for: observedEntry.pid)
         let overlaySignal = hasSameAppOverlayRecoverySignal(for: observedEntry)
+        // Generic non-managed focus is NOT overlay evidence here: the app's own
+        // menus arm it on every Window-menu interaction (a menu is non-managed
+        // focus), which turned every menu-driven same-app window pick into
+        // "overlay recovery churn" and suppressed its workspace reveal. The
+        // precise signal is the recognized overlay's lifecycle — panel ordered
+        // in recently or its destroy just observed.
         let hasCloseOrOverlayEvidence = recentSameAppClose
-            || overlaySignal.recentNonManaged
+            || overlayWindowLifecycleActive(for: observedEntry.pid)
             || overlaySignal.overlayVisible
         guard hasCloseOrOverlayEvidence else {
             recordCloseRecoveryActivationGate(
@@ -3864,6 +4022,15 @@ final class AXEventHandler: CGSEventDelegate {
                 )
             )
         )
+        if overlayCapablePids.contains(pid) {
+            // Sampling moment: an activation event for an overlay-capable pid
+            // is the natural point to observe whether its recognized overlay
+            // is ordered in, keeping `lastOverlayOrderedInByPid` fresh while
+            // the panel is up (e.g. a Cmd+N confirm inside the quick
+            // terminal). The overlay-close guards then still hold when the
+            // panel hides without a destroy.
+            _ = overlayWindowLifecycleActive(for: pid)
+        }
         // A genuine app-level switch (Dock, Cmd-Tab, launcher activate()) is a
         // user-intent signal that should still admit the app's window even while
         // non-managed focus is active. Window-level focus churn
@@ -3878,7 +4045,7 @@ final class AXEventHandler: CGSEventDelegate {
 
         let activeRequest = controller.focusBridge.activeManagedRequest
 
-        if pid == getpid(), (controller.hasFrontmostOwnedWindow || controller.hasVisibleOwnedWindow) {
+        if pid == getpid(), controller.hasFrontmostOwnedWindow || controller.hasVisibleOwnedWindow {
             if let activeRequest, activeRequest.token.pid == pid {
                 _ = controller.focusBridge.cancelManagedRequest(requestId: activeRequest.requestId)
                 cancelActivationRetry(requestId: activeRequest.requestId)
@@ -4634,10 +4801,27 @@ final class AXEventHandler: CGSEventDelegate {
         // Cmd-Tab switches share the same event shape, and a false positive
         // traps the user (each re-front refreshes the evidence). The stamp is
         // consulted only in the narrowly scoped overlay-close anchor assert.
+        let activationSelfFrontingAgeMs = selfFrontingAgeMs(for: entry.pid)
         let causelessExternalConfirmation = (source == .workspaceDidActivateApplication
             || source == .cgsFrontAppChanged)
             && activeRequest?.token != entry.token
-            && selfFrontingAgeMs(for: entry.pid) == nil
+            && activationSelfFrontingAgeMs == nil
+        recordNiriCreateFocusTrace(
+            .init(
+                kind: .managedConfirmationClassified(
+                    token: entry.token,
+                    source: source,
+                    causelessExternal: causelessExternalConfirmation,
+                    activeRequestToken: activeRequest?.token,
+                    selfFrontingAgeMs: activationSelfFrontingAgeMs,
+                    explicitStampToken: lastExplicitManagedConfirmation?.token,
+                    explicitStampAgeMs: lastExplicitManagedConfirmation.map {
+                        Int(((managedReplacementCurrentUptime() - $0.at) * 1000).rounded())
+                    },
+                    shouldConfirm: shouldConfirmRequest
+                )
+            )
+        )
         if !causelessExternalConfirmation, shouldConfirmRequest {
             lastExplicitManagedConfirmation = (entry.token, managedReplacementCurrentUptime())
         }
@@ -4645,7 +4829,8 @@ final class AXEventHandler: CGSEventDelegate {
         // quick-terminal hide can cause macOS to re-focus the existing managed
         // window; without this guard the viewport scrolls back to a column the
         // user deliberately scrolled away from.
-        let wasAlreadyConfirmedFocus = controller.workspaceManager.confirmedManagedFocusToken == entry.token
+        let previousConfirmedFocusToken = controller.workspaceManager.confirmedManagedFocusToken
+        let wasAlreadyConfirmedFocus = previousConfirmedFocusToken == entry.token
         let selectedSameAppFocusDisappearedBeforeConfirm = selectedSameAppFocusDisappearedSignal(
             for: entry,
             workspaceId: wsId
@@ -4692,7 +4877,13 @@ final class AXEventHandler: CGSEventDelegate {
             )
             let onScreen = isEntryOnScreen(entry)
             recordFocusRealityCheck(entry: entry, onScreen: onScreen)
-            followFocusToParkedWindowWorkspaceIfNeeded(entry: entry, onScreen: onScreen)
+            followFocusToParkedWindowWorkspaceIfNeeded(
+                entry: entry,
+                onScreen: onScreen,
+                causelessExternalActivation: causelessExternalConfirmation,
+                previousConfirmedFocusToken: previousConfirmedFocusToken,
+                solicitedByRequest: activeRequest?.token == entry.token
+            )
         } else {
             _ = controller.workspaceManager.setManagedFocus(
                 entry.token,
@@ -4779,6 +4970,15 @@ final class AXEventHandler: CGSEventDelegate {
                 preserveActiveViewportReason = .alreadyConfirmedFocusedWindowChanged
             } else if closeRecoveryPins.shouldPin {
                 preserveActiveViewportReason = .closeRecoveryPin
+            } else if causelessExternalConfirmation, crossPidOverlayLifecycleActive(excluding: entry.pid) {
+                // An overlay owner's "restore the previous app" call during its
+                // close. The confirmation itself stands (focus reality), but
+                // scrolling the viewport to the restored column and back once
+                // the overlay-close anchor assert corrects focus is the
+                // observed round-trip jump — and a resize issued inside that
+                // round trip lands on a half-revealed column. Selection still
+                // commits; only the viewport motion is suppressed.
+                preserveActiveViewportReason = .causelessExternalOverlayClose
             } else {
                 preserveActiveViewportReason = .none
             }
@@ -5868,17 +6068,41 @@ final class AXEventHandler: CGSEventDelegate {
 
         guard let candidate = prepareDestroyCandidate(windowId: windowId, pidHint: pidHint) else {
             if let destroyedPid = pidHint ?? resolvedToken?.pid {
+                if recognizedOverlayWindowIdsByPid[destroyedPid]?.contains(Int(windowId)) == true {
+                    recentRecognizedOverlayDestroyByPid[destroyedPid] = managedReplacementCurrentUptime()
+                    recordNiriCreateFocusTrace(
+                        .init(
+                            kind: .overlayDestroyObserved(
+                                pid: destroyedPid,
+                                windowId: Int(windowId),
+                                path: hasDeferredSameAppNativeActivation(for: destroyedPid)
+                                    ? "no_candidate_deferred_activation"
+                                    : "no_candidate"
+                            )
+                        )
+                    )
+                }
                 if hasDeferredSameAppNativeActivation(for: destroyedPid) {
                     // A browser/profile-style same-app focus switch can destroy
                     // an auxiliary AX element after the target focus has already
                     // been observed. Do not convert that into close recovery;
                     // let the deferred activation retry reveal the target.
-                } else {
+                } else if recognizedOverlayWindowIdsByPid[destroyedPid]?.contains(Int(windowId)) == true {
+                    // A quick-terminal hide/close destroys its recognized
+                    // overlay window instead of a tracked managed window;
+                    // that destroy is the overlay-close signal the same-app
+                    // close evidence, the close recovery, and the anchor
+                    // assert all key on. Only the recognized overlay id
+                    // qualifies: every app (including the overlay-capable
+                    // one) also churns menus, popovers, and helper surfaces
+                    // during ordinary use, and arming close evidence from
+                    // those swallowed genuine same-app window switches — a
+                    // Window-menu pick was deferred and then suppressed as
+                    // "overlay-close churn" because opening the menu itself
+                    // had armed the evidence. A real window close still arms
+                    // everything through its own tracked destroy.
                     recordRecentSameAppWindowClose(pid: destroyedPid)
                     recordRecentSameAppTeardown(pid: destroyedPid)
-                    // Quick-terminal hide/close can destroy an auxiliary AX element
-                    // instead of the tracked managed window. Preserve the current
-                    // workspace before macOS activates a successor app/window.
                     armWindowCloseFocusRecoveryForFocusedAppEvent(pid: destroyedPid)
                     assertManagedAnchorAfterOverlayClose(
                         destroyedPid: destroyedPid,
@@ -5901,6 +6125,22 @@ final class AXEventHandler: CGSEventDelegate {
                 scheduleWindowRuleReevaluationIfNeeded(targets: [.pid(pid_t(pid))])
             }
             return
+        }
+
+        if recognizedOverlayWindowIdsByPid[candidate.token.pid]?.contains(Int(windowId)) == true {
+            recentRecognizedOverlayDestroyByPid[candidate.token.pid] = managedReplacementCurrentUptime()
+            // A tracked overlay window's destroy never reaches the
+            // close-anchor assert (that runs only on the no-candidate
+            // branch); make that visible instead of silently diverging.
+            recordNiriCreateFocusTrace(
+                .init(
+                    kind: .overlayDestroyObserved(
+                        pid: candidate.token.pid,
+                        windowId: Int(windowId),
+                        path: "candidate origin=\(origin)"
+                    )
+                )
+            )
         }
 
         if verifyWindowServerLiveness {
@@ -6029,6 +6269,41 @@ final class AXEventHandler: CGSEventDelegate {
         handleRemoved(token: candidate.token)
     }
 
+    /// Terminal step for a deferred destroy-liveness verification that decided
+    /// the window is gone. Converges on the same managed-replacement funnel as
+    /// the synchronous destroy route in `handleWindowDestroyed`: correlation
+    /// eligibility is a property of the entry, not of the code path that
+    /// observed the teardown. A correlatable destroy joins the
+    /// (pid, workspace) burst — where a pending same-pid create rekeys the
+    /// existing entry, preserving its layout node, column identity and width
+    /// spec across an identity swap such as a tab switch — and an
+    /// uncorrelatable one removes immediately, exactly as the synchronous
+    /// route behaves.
+    private func finishVerifiedDestroyRemoval(token: WindowToken, windowId: UInt32) {
+        guard let candidate = prepareDestroyCandidate(windowId: windowId, pidHint: token.pid) else {
+            handleRemoved(token: token)
+            return
+        }
+
+        recordRecentSameAppWindowClose(pid: candidate.token.pid)
+        recordRecentSameAppTeardown(pid: candidate.token.pid)
+
+        let shouldDelayDestroy = shouldDelayManagedReplacementDestroy(candidate)
+        if shouldDelayDestroy, handleNativeFullscreenDestroy(candidate.token) {
+            return
+        }
+
+        if shouldDelayDestroy {
+            if controller?.currentBorderTarget()?.token == candidate.token {
+                controller?.focusBorderController.hide()
+            }
+            enqueueManagedReplacementDestroy(candidate)
+            return
+        }
+
+        processPreparedDestroy(candidate)
+    }
+
     private func shouldDelayManagedReplacementCreate(_ candidate: PreparedCreate) -> Bool {
         guard let _ = managedReplacementCorrelationPolicy(for: candidate.replacementMetadata) else {
             return false
@@ -6090,6 +6365,18 @@ final class AXEventHandler: CGSEventDelegate {
             policy: policy,
             resetExistingDeadline: resetExistingDeadline
         )
+        if burst.destroys.isEmpty {
+            // A replacement-shaped create with no destroy in its burst is the
+            // signature of a dropped destroy notification. Audit now, while
+            // the burst is open: a synthesized destroy verifies within the
+            // grace window (audit enumeration + 75 ms verification < 150 ms),
+            // joins this burst, and the pair rekeys — so the phantom is never
+            // admitted beside its successor, which is what reserved the empty
+            // column and produced the transient jump. For a genuinely new
+            // window the audit finds every entry alive and schedules nothing,
+            // and the admission proceeds on its normal deadline.
+            auditPidWindowLiveness(for: key)
+        }
     }
 
     private func enqueueManagedReplacementDestroy(_ candidate: PreparedDestroy) {
@@ -6137,32 +6424,41 @@ final class AXEventHandler: CGSEventDelegate {
         )
     }
 
-    private func matchedManagedReplacementPair(
+    /// Greedy destroy↔create pairing in event-sequence order: each destroy
+    /// claims the earliest still-unclaimed create it matches. Identical
+    /// same-app windows (Ghostty tabs) make several pairings metadata-valid at
+    /// once; earlier all-or-nothing matching bailed on that ambiguity, tearing
+    /// the column down and re-inserting it — the observed tab-creation layout
+    /// jump. Sequence order is the tiebreaker because the app emits each
+    /// window's destroy and replacement create adjacently; among
+    /// metadata-identical candidates a cross-pairing rekeys one identical
+    /// window onto another, which preserves the column either way.
+    private func matchedManagedReplacementPairs(
         in burst: PendingManagedReplacementBurst
-    ) -> MatchedManagedReplacementPair? {
-        var matchedPair: MatchedManagedReplacementPair?
+    ) -> [MatchedManagedReplacementPair] {
+        var pairs: [MatchedManagedReplacementPair] = []
+        var claimedCreateSequences: Set<UInt64> = []
+        let orderedDestroys = burst.destroys.sorted { $0.sequence < $1.sequence }
+        let orderedCreates = burst.creates.sorted { $0.sequence < $1.sequence }
 
-        for destroy in burst.destroys {
-            for create in burst.creates {
-                guard destroy.candidate.token != create.candidate.token,
-                      managedReplacementMetadataMatches(
-                          oldToken: destroy.candidate.token,
-                          old: destroy.candidate.replacementMetadata,
-                          new: create.candidate.replacementMetadata,
-                          newFacts: nil
-                      )
-                else {
-                    continue
-                }
-
-                if matchedPair != nil {
-                    return nil
-                }
-                matchedPair = MatchedManagedReplacementPair(destroy: destroy, create: create)
+        for destroy in orderedDestroys {
+            for create in orderedCreates
+                where !claimedCreateSequences.contains(create.sequence)
+                && destroy.candidate.token != create.candidate.token
+                && managedReplacementMetadataMatches(
+                    oldToken: destroy.candidate.token,
+                    old: destroy.candidate.replacementMetadata,
+                    new: create.candidate.replacementMetadata,
+                    newFacts: nil
+                )
+            {
+                pairs.append(MatchedManagedReplacementPair(destroy: destroy, create: create))
+                claimedCreateSequences.insert(create.sequence)
+                break
             }
         }
 
-        return matchedPair
+        return pairs
     }
 
     @discardableResult
@@ -6486,7 +6782,13 @@ final class AXEventHandler: CGSEventDelegate {
     /// Restricted to tiling windows: `activateWorkspace` reveals a tiled column;
     /// a floating window has no niri node for it to select, so it would no-op
     /// and emit a misleading `switch` decision.
-    private func followFocusToParkedWindowWorkspaceIfNeeded(entry: WindowModel.Entry, onScreen: Bool) {
+    private func followFocusToParkedWindowWorkspaceIfNeeded(
+        entry: WindowModel.Entry,
+        onScreen: Bool,
+        causelessExternalActivation: Bool = false,
+        previousConfirmedFocusToken: WindowToken? = nil,
+        solicitedByRequest: Bool = false
+    ) {
         guard let controller else { return }
         let manager = controller.workspaceManager
         let now = managedReplacementCurrentUptime()
@@ -6514,7 +6816,19 @@ final class AXEventHandler: CGSEventDelegate {
             )
             return
         }
-        if onScreen {
+        // A frame-level on-screen check is not enough: in display-spaces mode
+        // a window on an inactive workspace lives on another macOS Space at
+        // perfectly ordinary coordinates, so its frame intersects the monitor
+        // while the user cannot see it — observed as an in-app profile switch
+        // landing focus on such a window with no reveal. "On screen" only
+        // counts when the window's workspace is actually the active one.
+        // (A hiddenState-based "parked within the active workspace" condition
+        // was tried here and reverted: transient hidden states on ordinary
+        // mid-animation windows made follow fire spuriously, and the holds it
+        // armed then blocked genuine Cmd+` and menu switches.)
+        let entryWorkspaceActive = manager.monitorId(for: entry.workspaceId)
+            .flatMap { manager.activeWorkspace(on: $0)?.id } == entry.workspaceId
+        if onScreen, entryWorkspaceActive {
             recordNiriCreateFocusTrace(
                 .init(
                     kind: .followFocusToParkedWindow(
@@ -6562,7 +6876,15 @@ final class AXEventHandler: CGSEventDelegate {
             )
             return
         }
-        if recentParkedFocusFollowByToken[entry.token] != nil {
+        // The dedup exists for the echo of our own follow-switch: after the
+        // switch macOS re-confirms the same window, which would re-trigger the
+        // follow. An echo is a RE-confirmation — the token was already the
+        // confirmed focus. A confirmation whose previous confirmed focus was a
+        // different window is a genuinely new user switch (rapid Cmd+` cycling
+        // lands here within the dedup TTL) and must not be swallowed.
+        if recentParkedFocusFollowByToken[entry.token] != nil,
+           previousConfirmedFocusToken == nil || previousConfirmedFocusToken == entry.token
+        {
             recordNiriCreateFocusTrace(
                 .init(
                     kind: .followFocusToParkedWindow(
@@ -6574,6 +6896,95 @@ final class AXEventHandler: CGSEventDelegate {
             )
             return
         }
+        // An overlay owner's own "restore the previous app" call arrives as a
+        // cause-less app-level activation while its overlay is closing.
+        // Committing a workspace switch for it schedules a deferred
+        // focusWindow(reason: .activateWorkspace) that fires *after* the
+        // overlay-close anchor assert and stomps its correction — the
+        // observed #184 rollback. A genuine Cmd-Tab outside an overlay-close
+        // moment carries no live cross-pid overlay and is unaffected; inside
+        // one, only the automatic workspace switch is skipped — the focus
+        // confirmation itself already happened.
+        if causelessExternalActivation, crossPidOverlayLifecycleActive(excluding: entry.pid) {
+            recordNiriCreateFocusTrace(
+                .init(
+                    kind: .followFocusToParkedWindow(
+                        token: entry.token,
+                        workspaceId: entry.workspaceId,
+                        decision: "skip reason=causeless_external_overlay_close"
+                    )
+                )
+            )
+            return
+        }
+        // An app that closes its focused window may natively focus another of
+        // its windows BEFORE any destroy signal for the closed one reaches
+        // Nehir (Ghostty's AX destroy has been observed arriving ~500 ms after
+        // the successor's focus change), so close evidence cannot gate this
+        // switch — it does not exist yet. The distinguishing fact is the
+        // previous window's liveness: for an unsolicited same-pid switch the
+        // reveal commits only after one AX enumeration confirms the previous
+        // focus is still alive. If it is gone, this switch is close
+        // succession — the reveal is skipped and the close evidence armed for
+        // the recovery gates. A genuine same-app window jump costs one
+        // enumeration round trip before its reveal.
+        if !solicitedByRequest,
+           let previousToken = previousConfirmedFocusToken,
+           previousToken != entry.token,
+           previousToken.pid == entry.pid
+        {
+            recordNiriCreateFocusTrace(
+                .init(
+                    kind: .followFocusToParkedWindow(
+                        token: entry.token,
+                        workspaceId: entry.workspaceId,
+                        decision: "probe reason=same_pid_succession prev=\(previousToken)"
+                    )
+                )
+            )
+            Task { @MainActor [weak self] in
+                guard let self, let controller = self.controller else { return }
+                let enumeration = await controller.axManager.windowEnumerationForPID(entry.pid)
+                guard controller.workspaceManager.confirmedManagedFocusToken == entry.token else {
+                    self.recordNiriCreateFocusTrace(
+                        .init(
+                            kind: .followFocusToParkedWindow(
+                                token: entry.token,
+                                workspaceId: entry.workspaceId,
+                                decision: "skip reason=probe_stale_confirmation"
+                            )
+                        )
+                    )
+                    return
+                }
+                if case .success(let windows) = enumeration,
+                   !windows.contains(where: { _, pid, enumeratedWindowId in
+                       pid == previousToken.pid && enumeratedWindowId == previousToken.windowId
+                   })
+                {
+                    self.recordRecentSameAppWindowClose(pid: entry.pid)
+                    self.recordRecentSameAppTeardown(pid: entry.pid)
+                    self.recordNiriCreateFocusTrace(
+                        .init(
+                            kind: .followFocusToParkedWindow(
+                                token: entry.token,
+                                workspaceId: entry.workspaceId,
+                                decision: "skip reason=same_pid_close_succession prev=\(previousToken)"
+                            )
+                        )
+                    )
+                    return
+                }
+                self.commitFollowSwitchToParkedWindow(entry: entry)
+            }
+            return
+        }
+        commitFollowSwitchToParkedWindow(entry: entry)
+    }
+
+    private func commitFollowSwitchToParkedWindow(entry: WindowModel.Entry) {
+        guard let controller else { return }
+        let now = managedReplacementCurrentUptime()
         recentParkedFocusFollowByToken[entry.token] = now
         parkedFollowHoldByPid[entry.pid] = (workspaceId: entry.workspaceId, at: now)
         recordNiriCreateFocusTrace(
@@ -6640,13 +7051,51 @@ final class AXEventHandler: CGSEventDelegate {
         // the destroy notification arrives — which can be seconds after the
         // overlay was shown — by which point that evidence has expired.
         guard recognizedOverlayWindowIdsByPid[destroyedPid]?.contains(destroyedWindowId) == true,
-              let controller,
-              controller.workspaceManager.activeFocusRequestToken == nil,
-              let confirmedToken = controller.workspaceManager.confirmedManagedFocusToken,
-              let confirmedEntry = controller.workspaceManager.entry(for: confirmedToken),
-              let monitorId = controller.workspaceManager.monitorId(for: confirmedEntry.workspaceId),
-              controller.workspaceManager.activeWorkspace(on: monitorId)?.id == confirmedEntry.workspaceId
+              let controller
         else {
+            return
+        }
+
+        // From this point on, every early return is traced: a silent bail here
+        // is indistinguishable in a capture from the destroy never arriving,
+        // which has repeatedly sent investigations down the wrong path.
+        func skipAssert(_ reason: String) {
+            let workspaceId = controller.workspaceManager.confirmedManagedFocusToken
+                .flatMap { controller.workspaceManager.entry(for: $0)?.workspaceId }
+                ?? controller.interactionWorkspace()?.id
+            guard let workspaceId else { return }
+            controller.diagnostics.recordRuntimeViewportTrace(
+                workspaceId: workspaceId,
+                reason: "overlay_close_anchor_skipped",
+                details: [
+                    "uptimeMs=\(traceUptimeMs())",
+                    "destroyedPid=\(destroyedPid)",
+                    "destroyedWindowId=\(destroyedWindowId)",
+                    "reason=\(reason)",
+                    "explicitStamp=\(lastExplicitManagedConfirmation.map { String(describing: $0.token) } ?? "nil")"
+                ]
+            )
+        }
+
+        if let activeRequest = controller.workspaceManager.activeFocusRequestToken {
+            skipAssert("active_request:\(activeRequest)")
+            return
+        }
+        guard let confirmedToken = controller.workspaceManager.confirmedManagedFocusToken else {
+            skipAssert("no_confirmed_focus")
+            return
+        }
+        guard let confirmedEntry = controller.workspaceManager.entry(for: confirmedToken) else {
+            skipAssert("confirmed_entry_missing:\(confirmedToken)")
+            return
+        }
+        guard let monitorId = controller.workspaceManager.monitorId(for: confirmedEntry.workspaceId) else {
+            skipAssert("no_monitor_for_workspace")
+            return
+        }
+        guard controller.workspaceManager.activeWorkspace(on: monitorId)?.id == confirmedEntry.workspaceId
+        else {
+            skipAssert("confirmed_workspace_inactive")
             return
         }
 
@@ -6777,16 +7226,65 @@ final class AXEventHandler: CGSEventDelegate {
         hasRecentNonManagedFocus(for: pid) || hasRecentSameAppWindowClose(for: pid)
     }
 
-    /// Whether this pid's overlay is in (or just finished) a close lifecycle:
-    /// the quick-terminal hide emits a focused-window loss before the app
-    /// re-activates the pre-overlay app, and the overlay's destroy records
-    /// same-app close/teardown evidence. Any of these marks the cause-less
-    /// external activation that follows as the overlay-close restore rather
-    /// than a genuine user app switch.
-    private func hasOverlayLifecycleEvidence(for pid: pid_t) -> Bool {
-        isWithinSameAppCloseRecoveryWindow(pid: pid)
-            || hasRecentSameAppTeardown(for: pid)
-            || focusedWindowLossClosePrecursor(for: pid) != nil
+    /// Whether `pid`'s recognized overlay (e.g. the Ghostty quick terminal) is
+    /// in an active lifecycle window: one of its recognized overlay windows
+    /// still resolves in the WindowServer (open, or hiding ahead of its
+    /// destroy notification), or that destroy was observed within the
+    /// same-app close-recovery window. This — not pid-level teardown
+    /// evidence — is what scopes overlay-teardown protections to moments an
+    /// overlay can actually cause: pid-level evidence proved far too broad,
+    /// as ordinary tab churn kept refreshing it for ten seconds at a time
+    /// with the overlay itself long gone.
+    private func overlayWindowLifecycleActive(for pid: pid_t) -> Bool {
+        guard overlayCapablePids.contains(pid) else { return false }
+        let now = managedReplacementCurrentUptime()
+        if let destroyedAt = recentRecognizedOverlayDestroyByPid[pid],
+           now - destroyedAt <= Self.recentSameAppWindowCloseTTL
+        {
+            return true
+        }
+        if let windowIds = recognizedOverlayWindowIdsByPid[pid] {
+            let orderedInNow = windowIds.contains { windowId in
+                guard let queryId = UInt32(exactly: windowId),
+                      resolveWindowInfo(queryId)?.pid == pid
+                else {
+                    return false
+                }
+                // The WindowServer keeps a hidden quick-terminal panel's
+                // window alive for reuse, so bare resolvability holds for the
+                // app's whole lifetime — observed as destroy suppression
+                // firing during ordinary tab churn with the overlay long
+                // dismissed. A panel is a *live* overlay only while it is
+                // actually ordered in; an unresolvable ordering query (nil)
+                // conservatively counts as ordered in.
+                return SkyLight.shared.isWindowOrderedIn(queryId) != false
+            }
+            if orderedInNow {
+                lastOverlayOrderedInByPid[pid] = now
+                return true
+            }
+        }
+        // A quick-terminal hide is orderOut without a destroy: the panel
+        // flips to not-ordered-in the instant it starts hiding, before the
+        // owner's "restore the previous app" activation arrives — observed
+        // as the restore slipping past every overlay-close guard. A panel
+        // seen ordered in within the close-recovery window is therefore
+        // still in its lifecycle. The stamp refreshes on activation events
+        // of the overlay's pid while the panel is up.
+        if let seenAt = lastOverlayOrderedInByPid[pid],
+           now - seenAt <= Self.recentSameAppWindowCloseTTL
+        {
+            return true
+        }
+        return false
+    }
+
+    /// Whether any *other* pid's recognized overlay is currently in its
+    /// lifecycle window — the context in which a cause-less external
+    /// activation is likely that overlay owner's "restore the previous app"
+    /// call rather than a genuine user app switch.
+    private func crossPidOverlayLifecycleActive(excluding pid: pid_t) -> Bool {
+        overlayCapablePids.contains { $0 != pid && overlayWindowLifecycleActive(for: $0) }
     }
 
     /// The workspace a recent follow_focus pinned for `pid`, if the hold has not
@@ -6894,22 +7392,40 @@ final class AXEventHandler: CGSEventDelegate {
         new: ManagedReplacementMetadata,
         newFacts: WindowRuleFacts?
     ) -> Bool {
+        managedReplacementMetadataMatchFailure(
+            oldToken: oldToken,
+            old: old,
+            new: new,
+            newFacts: newFacts
+        ) == nil
+    }
+
+    /// The single source of truth for destroy↔create pairing: nil means the
+    /// pair matches; otherwise the first predicate that rejected it, named so
+    /// a capture's match diagnostics show *why* a burst failed to pair rather
+    /// than only that it did.
+    private func managedReplacementMetadataMatchFailure(
+        oldToken: WindowToken,
+        old: ManagedReplacementMetadata,
+        new: ManagedReplacementMetadata,
+        newFacts: WindowRuleFacts?
+    ) -> String? {
         if managedReplacementIsDirectFloatingChild(oldToken: oldToken, new: new, newFacts: newFacts) {
-            return false
+            return "direct_floating_child"
         }
-
-        guard managedReplacementCorrelationPolicy(for: old) != nil,
-              managedReplacementCorrelationPolicy(for: new) != nil,
-              managedReplacementBundleIdsMatch(old.bundleId, new.bundleId),
-              old.workspaceId == new.workspaceId,
-              old.role == new.role,
-              old.subrole == new.subrole,
-              managedReplacementWindowLevelsMatch(old.windowLevel, new.windowLevel)
-        else {
-            return false
+        guard managedReplacementCorrelationPolicy(for: old) != nil else { return "old_no_policy" }
+        guard managedReplacementCorrelationPolicy(for: new) != nil else { return "new_no_policy" }
+        guard managedReplacementBundleIdsMatch(old.bundleId, new.bundleId) else { return "bundle_mismatch" }
+        guard old.workspaceId == new.workspaceId else { return "workspace_mismatch" }
+        guard old.role == new.role else { return "role_mismatch" }
+        guard old.subrole == new.subrole else { return "subrole_mismatch" }
+        guard managedReplacementWindowLevelsMatch(old.windowLevel, new.windowLevel) else {
+            return "level_mismatch"
         }
-
-        return managedReplacementStructuralAnchorsMatch(oldToken: oldToken, old: old, new: new)
+        guard managedReplacementStructuralAnchorsMatch(oldToken: oldToken, old: old, new: new) else {
+            return "structural_anchor_mismatch"
+        }
+        return nil
     }
 
     private func managedReplacementIsDirectFloatingChild(
@@ -7150,6 +7666,30 @@ final class AXEventHandler: CGSEventDelegate {
 
     private func flushManagedReplacementBurst(for key: ManagedReplacementKey) {
         pendingManagedReplacementTasks.removeValue(forKey: key)?.cancel()
+        guard let pendingBurst = pendingManagedReplacementBursts[key] else { return }
+        if let extensionReason = oneSidedBurstCounterpartInFlight(pendingBurst, key: key),
+           pendingBurst.flushExtensionCount < Self.maxOneSidedBurstFlushExtensions
+        {
+            var extendedBurst = pendingBurst
+            extendedBurst.flushExtensionCount += 1
+            pendingManagedReplacementBursts[key] = extendedBurst
+            recordManagedReplacementTrace(
+                key: key,
+                kind: .flushExtended(
+                    policy: managedReplacementPolicyName(extendedBurst.policy),
+                    reason: extensionReason,
+                    extensionCount: extendedBurst.flushExtensionCount,
+                    createCount: extendedBurst.creates.count,
+                    destroyCount: extendedBurst.destroys.count
+                )
+            )
+            scheduleManagedReplacementFlush(
+                for: key,
+                policy: extendedBurst.policy,
+                resetExistingDeadline: true
+            )
+            return
+        }
         guard let burst = pendingManagedReplacementBursts.removeValue(forKey: key) else { return }
         // Runs after the replay below: a deferred removal focus recovery either
         // becomes unnecessary (a replacement create arrived) or resumes now.
@@ -7158,6 +7698,7 @@ final class AXEventHandler: CGSEventDelegate {
                 for: key,
                 replacementCreated: !burst.creates.isEmpty
             )
+            auditPidWindowLiveness(for: key)
         }
         let elapsedMillis = max(
             0,
@@ -7175,11 +7716,15 @@ final class AXEventHandler: CGSEventDelegate {
             )
         )
 
-        if let pair = matchedManagedReplacementPair(in: burst) {
-            let rekeyed = completeManagedReplacement(destroy: pair.destroy, create: pair.create)
-            let replayedEvents = rekeyed
-                ? burst.orderedEvents(excludingSequences: pair.excludedSequences)
-                : burst.orderedEvents
+        let pairs = matchedManagedReplacementPairs(in: burst)
+        if !pairs.isEmpty {
+            var excludedSequences: Set<UInt64> = []
+            var rekeyedCount = 0
+            for pair in pairs where completeManagedReplacement(destroy: pair.destroy, create: pair.create) {
+                excludedSequences.formUnion(pair.excludedSequences)
+                rekeyedCount += 1
+            }
+            let replayedEvents = burst.orderedEvents(excludingSequences: excludedSequences)
             recordManagedReplacementTrace(
                 key: key,
                 kind: .flushManagedReplacementBurst(
@@ -7188,11 +7733,11 @@ final class AXEventHandler: CGSEventDelegate {
                     destroyCount: burst.destroys.count,
                     elapsedMillis: elapsedMillis,
                     matched: true,
-                    rekeyed: rekeyed,
+                    rekeyed: rekeyedCount > 0,
                     replayedCount: replayedEvents.count
                 )
             )
-            if rekeyed {
+            if rekeyedCount > 0 {
                 recordManagedReplacementTrace(
                     key: key,
                     kind: .matched(
@@ -7204,7 +7749,7 @@ final class AXEventHandler: CGSEventDelegate {
             replayManagedReplacementEvents(
                 replayedEvents,
                 key: key,
-                reason: rekeyed ? "matched_rekeyed_remainder" : "matched_rekey_failed"
+                reason: rekeyedCount > 0 ? "matched_rekeyed_remainder" : "matched_rekey_failed"
             )
             return
         }
@@ -7221,7 +7766,131 @@ final class AXEventHandler: CGSEventDelegate {
                 replayedCount: burst.orderedEvents.count
             )
         )
+        recordUnmatchedBurstDiagnostics(burst, key: key, policyName: policyName)
         replayManagedReplacementEvents(burst.orderedEvents, key: key, reason: "no_match")
+    }
+
+    /// Emits one pairing verdict per destroy×create pair of a burst that
+    /// failed to match, so a capture distinguishes ambiguity (several pairs
+    /// read `verdict=match`) from a metadata mismatch (the named predicate),
+    /// and shows which candidates were already dead in the WindowServer at
+    /// flush time.
+    private func recordUnmatchedBurstDiagnostics(
+        _ burst: PendingManagedReplacementBurst,
+        key: ManagedReplacementKey,
+        policyName: String
+    ) {
+        guard !burst.creates.isEmpty, !burst.destroys.isEmpty else { return }
+        func windowServerAlive(_ token: WindowToken) -> Bool {
+            guard let windowId = UInt32(exactly: token.windowId) else { return false }
+            return resolveWindowInfo(windowId)?.pid == token.pid
+        }
+        for destroy in burst.destroys {
+            for create in burst.creates {
+                let verdict: String
+                if destroy.candidate.token == create.candidate.token {
+                    verdict = "same_token"
+                } else {
+                    verdict = managedReplacementMetadataMatchFailure(
+                        oldToken: destroy.candidate.token,
+                        old: destroy.candidate.replacementMetadata,
+                        new: create.candidate.replacementMetadata,
+                        newFacts: nil
+                    ) ?? "match"
+                }
+                recordManagedReplacementTrace(
+                    key: key,
+                    kind: .matchDiagnostics(
+                        policy: policyName,
+                        destroyToken: destroy.candidate.token,
+                        createToken: create.candidate.token,
+                        verdict: verdict,
+                        destroyWsAlive: windowServerAlive(destroy.candidate.token),
+                        createWsAlive: windowServerAlive(create.candidate.token)
+                    )
+                )
+            }
+        }
+    }
+
+    /// Safety net for destroy signals that never arrive. Under fast tab
+    /// churn macOS can coalesce or drop a window's destroy notification
+    /// entirely — observed as an id-swap chain with one link's destroy
+    /// missing, which leaves that entry tracked forever: a phantom column
+    /// holding layout space and a ghost row in the workspace bar. The audit
+    /// compares the pid's tracked entries against one AX enumeration and
+    /// hands any tracked-but-unenumerated token to the ordinary
+    /// destroy-liveness verification, which owns the removal decision
+    /// (WindowServer check, overlay blind-moment keep, correlation funnel).
+    ///
+    /// Two trigger points: a lone create entering an empty-destroy burst
+    /// (the missing destroy's replacement create — synthesizing the destroy
+    /// while the burst is still open lets the pair rekey, so the phantom
+    /// never gets admitted next to the successor), and every burst flush
+    /// (the settle point of a churn episode, catching whatever the first
+    /// trigger raced past).
+    private func auditPidWindowLiveness(for key: ManagedReplacementKey) {
+        Task { @MainActor [weak self] in
+            guard let self, let controller = self.controller else { return }
+            let enumeration = await controller.axManager.windowEnumerationForPID(key.pid)
+            guard case .success(let windows) = enumeration else { return }
+            let enumeratedWindowIds = Set(windows.map(\.2))
+            for entry in controller.workspaceManager.entries(forPid: key.pid) {
+                let token = entry.token
+                guard !enumeratedWindowIds.contains(token.windowId),
+                      self.pendingDestroyLivenessVerificationTasks[token] == nil,
+                      self.pendingManagedReplacementBursts[
+                          ManagedReplacementKey(pid: token.pid, workspaceId: entry.workspaceId)
+                      ]?.destroys.contains(where: { $0.candidate.token == token }) != true
+                else {
+                    continue
+                }
+                controller.diagnostics.recordRuntimeViewportTrace(
+                    workspaceId: entry.workspaceId,
+                    reason: "replacement_liveness_audit",
+                    details: [
+                        "uptimeMs=\(self.traceUptimeMs())",
+                        "token=\(token)",
+                        "outcome=verification_scheduled"
+                    ]
+                )
+                self.scheduleDestroyLivenessVerification(for: token)
+            }
+        }
+    }
+
+    // Upper bound on one-sided flush extensions. The longest counterpart
+    // pipeline is a create's AX materialization: `createdWindowRetryLimit`
+    // (5) attempts spaced `stabilizationRetryDelay` (100 ms) apart, ≈500 ms.
+    // Four extensions of the 150 ms structural grace cover 600 ms, so a
+    // create that will ever materialize is waited for; one that won't stops
+    // extending because its retry pipeline has drained by then.
+    private static let maxOneSidedBurstFlushExtensions = 4
+
+    /// Whether a one-sided burst's counterpart event is still in flight for
+    /// the same pid: lone destroys wait on a create still in its
+    /// AX-materialization retries, lone creates wait on a destroy still in
+    /// liveness verification. Returns the reason to extend, or nil to flush.
+    private func oneSidedBurstCounterpartInFlight(
+        _ burst: PendingManagedReplacementBurst,
+        key: ManagedReplacementKey
+    ) -> String? {
+        if burst.creates.isEmpty, !burst.destroys.isEmpty {
+            let createRetryInFlight = pendingCreatedWindowRetryTasks.keys.contains { windowId in
+                if let retryPid = createdWindowRetryPidById[windowId] {
+                    return retryPid == key.pid
+                }
+                return resolveWindowInfo(windowId)?.pid == key.pid
+            }
+            if createRetryInFlight {
+                return "create_retry_in_flight"
+            }
+        } else if burst.destroys.isEmpty, !burst.creates.isEmpty {
+            if pendingDestroyLivenessVerificationTasks.keys.contains(where: { $0.pid == key.pid }) {
+                return "destroy_verification_in_flight"
+            }
+        }
+        return nil
     }
 
     private func resumeDeferredRemovalFocusRecovery(
@@ -7906,6 +8575,8 @@ final class AXEventHandler: CGSEventDelegate {
         recentParkedFocusFollowByToken = recentParkedFocusFollowByToken.filter { $0.key.pid != pid }
         parkedFollowHoldByPid.removeValue(forKey: pid)
         recentManagedAdmissionByToken = recentManagedAdmissionByToken.filter { $0.key.pid != pid }
+        recentRecognizedOverlayDestroyByPid.removeValue(forKey: pid)
+        lastOverlayOrderedInByPid.removeValue(forKey: pid)
         overlayCapablePids.remove(pid)
 
         guard let controller else { return }
