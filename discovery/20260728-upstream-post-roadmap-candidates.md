@@ -30,8 +30,16 @@ already-planned · 🟢 already-have / skip / N/A. Effort: XS / S / M / L.
 
 ## Headline — this sweep found more confirmed defects than any prior one
 
-Twelve items are 🔴 with a source-cited pre-fix shape present in Nehir `main`.
-The three highest-confidence, lowest-effort ones:
+**Erratum (2026-07-28):** the sweep originally counted twelve 🔴 items. The two
+removal-time viewport rows (`a91f20e8` and `53901835`) were false positives caused
+by matching code shape without checking Nehir's divergent viewport policy. The
+corrected count is **ten**. Nehir intentionally allows persistent edge overscroll
+and follows a maximum-stable/minimum-movement policy for close-driven geometry
+changes; an OmniWM content-edge clamp would add an unsolicited post-close spring.
+See
+[`../noop/20260728-omniwm-498-niri-removal-content-edge-clamp-rejected.md`](../noop/20260728-omniwm-498-niri-removal-content-edge-clamp-rejected.md).
+
+The two highest-confidence, lowest-effort findings at sweep time:
 
 - **`a4b8611a` — at sweep time, Nehir's primary SkyLight focus path carried the
   byte-for-byte pre-fix key-window event record** (`Sources/Nehir/Core/PrivateAPIs.swift:38-58`:
@@ -52,11 +60,6 @@ The three highest-confidence, lowest-effort ones:
   **Shipped (2026-07-28)** on `main` as `64e0b98c`, with the carve-out extended to
   the foreign-display pills — the open question this sweep left undecided. See
   [`../completed/20260728-hide-empty-workspaces-drops-focused-workspace.md`](../completed/20260728-hide-empty-workspaces-drops-focused-workspace.md).
-- **`a91f20e8` — the Niri viewport is never clamped when a column right of the
-  active one is removed.** `removeColumnByIdx`'s `removedIdx > activeIdx` branch
-  returns with `viewportNeedsRecalc == false` and no recalculation
-  (`Sources/Nehir/Core/Layout/Niri/NiriLayoutEngine+Windows.swift:527-539`);
-  `removeWindows` has no content-edge clamp (`:331-342`). S.
 
 Two findings are structural rather than point fixes and change how existing work
 should be scoped:
@@ -80,7 +83,7 @@ Recorded because lanes reached different conclusions and the resolution matters.
 
 | Item | Conflict | Resolution |
 | --- | --- | --- |
-| BarutSRB/OmniWM#498 / `a91f20e8` viewport clamp | The issue lane read it as 🟢 already covered by `completed/20260706-stable-viewport-on-window-close-recovery.md`. The Niri lane read the engine source and found the pre-fix shape present. | **🔴 stands.** The Niri lane checked all six candidate Nehir docs individually: every one is about the viewport moving when it should stay (over-eager reveal/recenter) or about *focus* recovery. Upstream's bug is the opposite polarity — the viewport fails to move and straddles vacated space. Net-new. |
+| BarutSRB/OmniWM#498 / `a91f20e8` viewport clamp | The issue lane read it as 🟢 already covered by Nehir's stable-viewport work. The Niri lane matched Nehir's removal control flow to OmniWM's pre-fix shape and upgraded it to 🔴. | **Corrected to 🟢 do not port.** The reconciliation omitted Nehir's product-level divergence: persistent edge overscroll is intentional (`ViewportState.viewportStartBounds`), and close/relayout work maximizes anchor preservation. `removedIdx > activeIdx` correctly leaves the unchanged active column and viewport in place. A content-edge clamp adds an unsolicited spring and breaks existing removal-transaction coverage. [`../noop/20260728-omniwm-498-niri-removal-content-edge-clamp-rejected.md`](../noop/20260728-omniwm-498-niri-removal-content-edge-clamp-rejected.md) |
 | BarutSRB/OmniWM#505 / `a4b8611a` Chrome PWA focus | The issue lane guessed 🟢 "probable N/A, upstream-regression-specific — unverified". The AX lane read `PrivateAPIs.swift`. | **Superseded.** The static finding was real — Nehir carried the pre-fix bytes — but the issue lane's runtime caution was closer. The symptom is not reproducible here, including on upstream v0.5.7 itself. The record change therefore shipped as hardening, not a defect fix (`0175a6d5` + `6bdd9b10`). [`../completed/20260728-skylight-key-window-nan-location-symptom-not-reproducible.md`](../completed/20260728-skylight-key-window-nan-location-symptom-not-reproducible.md) |
 | BarutSRB/OmniWM#488 follow-focus on up/down moves | Issue lane: 🟡 "XS verify, not verified". Focus lane read all five move paths. | **🔴 confirmed.** Three of five paths ignore the setting. |
 | BarutSRB/OmniWM#479 trackpad scroll focus | Issue lane: 🟡 "gesture lane, unverified". Focus lane verified. | **🟢 for the feature** (Nehir has it and richer), **🔴 for `7f300c31`(a)** — Nehir also focuses on *cancelled/aborted* gestures. |
@@ -205,8 +208,8 @@ pre-fix shape (🟡, pair it with the observer fix).
 
 | Upstream commit | One-line change | Nehir-equivalent already present? (file:line) | Verdict | Effort | Nehir files |
 | --- | --- | --- | --- | --- | --- |
-| `a91f20e8` Clamp Niri viewport to remaining content after window removal | Clamp settled view origin so it never extends past surviving columns; report via `viewportNeedsRecalc`. | **No.** `removeColumnByIdx`'s `removedIdx > activeIdx` branch only clears `activatePrevColumnOnRemoval` and returns with `viewportNeedsRecalc == false` (`Sources/Nehir/Core/Layout/Niri/NiriLayoutEngine+Windows.swift:527-539`); `removeWindows` returns without a content-edge clamp (`:331-342`). Identical pre-fix shape, including the stale-restore branch (`:486-516`). | **🔴** | S | `NiriLayoutEngine+Windows.swift` |
-| `53901835` Fix Niri viewport correction after window removal | Restrict correction to real *column* removals, compute bounds on the primary axis, preserve centering policy, carry "a column disappeared" through refresh coalescing. | **No, and the seam is missing.** `NiriWindowRemovalSeed` has no `removedColumn` flag (`Sources/Nehir/Core/Layout/LayoutBoundary.swift`); Nehir has no `centerFocusedColumn` setting (`ResolvedNiriSettings` is `defaultColumnWidth` / `loneWindowPolicy` / `infiniteLoop`, `Sources/Nehir/Core/Config/MonitorNiriSettings.swift:60-64`) and no `computeVisibleOffset`. | **🔴** (port the intent, not the diff) | M | `NiriLayoutEngine+Windows.swift`, `LayoutBoundary.swift`, `LayoutRefreshController.swift`, `NiriLayoutHandler.swift` |
+| `a91f20e8` Clamp Niri viewport to remaining content after window removal | Clamp settled view origin so it never extends past surviving columns; report via `viewportNeedsRecalc`. | **Not applicable by design.** Nehir intentionally permits persistent edge overscroll (`ViewportState+Geometry.swift:600-620`) and preserves the physical viewport anchor across non-active removals. The no-recalc right-removal branch is the minimum-movement outcome, not a missing fix. A content-edge clamp contradicts existing removal coverage (`NiriLayoutEngineTests.swift:1840-1875`) and would add an automatic spring after close. | **🟢 do not port** | — | none; see [`../noop/20260728-omniwm-498-niri-removal-content-edge-clamp-rejected.md`](../noop/20260728-omniwm-498-niri-removal-content-edge-clamp-rejected.md) |
+| `53901835` Fix Niri viewport correction after window removal | Restrict correction to real *column* removals, compute bounds on the primary axis, preserve centering policy, carry "a column disappeared" through refresh coalescing. | **Not applicable for the same policy reason.** Column-removal gating and primary-axis generalization only make OmniWM's incompatible content-edge correction run more precisely. Nehir has no `centerFocusedColumn` contract, and it should not add removal evidence/coalescing solely to trigger movement that Nehir deliberately avoids. | **🟢 do not port** | — | none; same no-op verdict |
 | `044441c4` Fix fullscreen close replacement replay | Tag each destroy with its evidence (`transientLifecycle` vs definitive `windowClosed`), carry it through managed-replacement burst correlation, refuse the native-fullscreen "temporarily unavailable" shortcut for definitive closes. | **No — the same evidence loss exists.** Nehir *has* the richer origin (`handleCGSWindowClosed` → `handleWindowDestroyed(..., origin: .cgsWindowClosed)`, `Sources/Nehir/Core/Controller/AXEventHandler.swift:1841-1852`, `:5698-5702`) but `PreparedDestroy` does **not** carry it (`:758-774`), so the delayed managed-replacement branch calls `handleNativeFullscreenDestroy` with no evidence gate (`:5836`) and `processPreparedDestroy` → `handleRemoved(token:)` loses it (`:5868`, `:2326-2340`). The burst queue also drops a later stronger-evidence destroy instead of upgrading it (`:801-804`). | **🔴** | M | `AXEventHandler.swift` |
 | `12f8ee43` Route Niri directions by monitor orientation | Resolve primary/secondary axis from monitor orientation in focus, move, edge detection, animation; flip the vertical primary-step sign. | **Partial — substrate yes, wiring no.** See O1–O3. | **🔴** (O1/O2) / 🟡 (O3) | S → M | `Direction.swift`, `NiriLayoutHandler.swift`, `NiriNavigation.swift` |
 | `f54b28d6` Complete orientation-aware Niri layout and sizing | Makes the whole Niri surface orientation-relative, plus a `column`→`container` / `width`→`primarySpan` rename across config, IPC, CLI, UI. | Decomposes into O1–O7. | mixed | see below | see below |
@@ -256,14 +259,15 @@ upstream's app rule is now `initialContainerPrimarySpan` (orientation-relative),
 field from the outset, even if the initial implementation resolves only the
 horizontal case.
 
-**Porting cautions for the viewport clamp**, stated as unverified: (a) `removeWindows`
-already has an `ensureSelectionVisible` fixup at `NiriLayoutEngine+Windows.swift:313-329`
-gated on `viewportNeedsRecalc`, so a new clamp must be ordered after it and must not
-double-animate; (b) `53901835`'s centering-preservation logic has **no Nehir
-counterpart** and must be rewritten against Nehir's reveal-style / `LoneWindowPolicy`
-model — a straight port would not compile and would re-introduce the recenter
-behaviour that `discovery/20260727-column-width-cycle-recenters-viewport-multi-column.md`
-is trying to remove. Sequence it after, or jointly with, that work.
+**Viewport-clamp erratum — do not port either commit.** The earlier caution treated
+ordering and centering-policy adaptation as the remaining design questions. The
+upstream correction itself is incompatible with Nehir: `viewportStartBounds`
+explicitly permits persistent edge overscroll, while Nehir's close and relayout
+work follows a maximum-stable/minimum-movement policy. Running `animateToOffset`
+after removal would create the exact unrequested delayed movement those policies
+avoid. `53901835`'s column-removal gate, primary-axis generalization and coalescing
+seam do not change that conclusion. Full rationale:
+[`../noop/20260728-omniwm-498-niri-removal-content-edge-clamp-rejected.md`](../noop/20260728-omniwm-498-niri-removal-content-edge-clamp-rejected.md).
 
 ---
 
@@ -522,7 +526,7 @@ given status only and cross-referenced.
 | BarutSRB/OmniWM#511 / BarutSRB/OmniWM#508 no-fullscreen-button windows not managed | **now closed** (2026-07-26) | Closed by `7ea45238`. Lane 1 confirmed the predicate defect in Nehir — **L1-E**. | **🔴** |
 | BarutSRB/OmniWM#505 Chrome WebApps closed when enabling | **now closed** (2026-07-24) | Closed by `a4b8611a`. Lane 1 confirmed Nehir carries the pre-fix event record. | **🔴** |
 | BarutSRB/OmniWM#488 / BarutSRB/OmniWM#489 move up/down doesn't honour Follow Window | **now closed** (2026-07-17) | Closed by `b35d39d4` + `6d516923`. Lane 3 confirmed three of five Nehir paths ignore the setting. | **🔴** |
-| BarutSRB/OmniWM#498 / BarutSRB/OmniWM#499 Niri does not recenter after closing the last pane | **now closed** (2026-07-21) | Closed by `a91f20e8` / `53901835`. Lane 2 confirmed this is a **different defect** from Nehir's existing close-recovery docs. | **🔴** |
+| BarutSRB/OmniWM#498 / BarutSRB/OmniWM#499 Niri does not recenter after closing the last pane | **now closed** (2026-07-21) | Closed upstream by `a91f20e8` / `53901835`, but **not a Nehir defect**. Nehir intentionally allows a persistent hanging edge/exposed desktop and minimizes viewport movement after close. The proposed content-edge correction contradicts those policies and existing removal-transaction coverage. | **🟢 do not port** — [`noop verdict`](../noop/20260728-omniwm-498-niri-removal-content-edge-clamp-rejected.md) |
 | BarutSRB/OmniWM#487 fullscreen apps stuck after quit | **now closed** (2026-07-27) | Closed by `044441c4`. Lane 2 confirmed the evidence loss at Nehir's `PreparedDestroy` boundary. | **🔴** |
 | BarutSRB/OmniWM#509 / BarutSRB/OmniWM#510 Focus Previous uses stale selection | **now closed** (2026-07-27) | Closed by `2a7041d8`. Lane 3 confirmed both halves absent in Nehir. | **🔴** / 🟡 |
 | BarutSRB/OmniWM#493, BarutSRB/OmniWM#486 gestures / Magic Trackpad not working | **now closed** | Closed by `100586d2` + `d5df958d`. Lane 4 confirmed Nehir's silent-deafness path. | **🔴** |
@@ -584,8 +588,9 @@ The previous sweep's 🔴 recommendations now have plans on this branch:
 
 ## Recommendation — what to plan next
 
-Ranked by confidence × leverage. Everything in tier 1 has a source-cited pre-fix
-shape in `main` and is XS–S.
+Ranked by confidence × leverage. Everything in tier 1 has a source-cited defect
+shape in `main` and is XS–S. The removal-time viewport clamp has been removed from
+the queue: its matching source shape was not a defect under Nehir's viewport policy.
 
 **Tier 1 — small, confirmed, independent**
 
@@ -619,70 +624,69 @@ shape in `main` and is XS–S.
    suite — fixes a user-visible setting that silently does nothing on three of five
    paths, closes the `stopScrollAnimation` asymmetry, and lands the cheap staleness
    guards from `ea490f8e` + the `e75bc2a5` recompute-half in the same edit.
-4. **🔴 `a91f20e8` removal-time viewport clamp (S).** Start with the S-sized shape
-   (clamp settled view origin to the surviving content edge at the single
-   `removeWindows` choke point); treat `53901835` as the follow-up adding
-   column-removal gating and the coalescing seam. **Do not copy `53901835`'s
-   centering-policy block verbatim** — rewrite it against Nehir's reveal-style model,
-   sequenced with the width-cycle recentering work.
-5. **🔴 Recycled-`displayId` guard in `OutputId.resolveMonitor` and
+4. **🔴 Recycled-`displayId` guard in `OutputId.resolveMonitor` and
    `resolveWorkspaceRestoreAssignments` (S).** Require name/anchor corroboration on
    the `displayId` branch, matching the shipped `MonitorSettingsType` precedent.
    Independent of any UUID adoption.
-6. **🔴 Finish `planned/20260714-reinstall-ax-observers-after-service-restart.md`.**
+5. **🔴 Finish `planned/20260714-reinstall-ax-observers-after-service-restart.md`.**
    Re-verified as still open; pair the low-risk `RunLoopJob` serialization port with it.
+
+**Removed from the queue:** `a91f20e8` / `53901835` removal-time viewport
+correction. Nehir allows a persistent hanging edge and prioritizes preserving the
+workspace anchor; the port would add delayed, unrequested post-close movement. See
+[`../noop/20260728-omniwm-498-niri-removal-content-edge-clamp-rejected.md`](../noop/20260728-omniwm-498-niri-removal-content-edge-clamp-rejected.md).
 
 **Tier 2 — confirmed but gated on a repro or a decision**
 
-7. **🔴 O1+O2 orientation-aware directional focus (XS code, gated on one portrait
+6. **🔴 O1+O2 orientation-aware directional focus (XS code, gated on one portrait
    repro).** Pass `orientation` at `NiriLayoutHandler.swift:1521` and `:1736`, resolve
    `cachedHeight` on the vertical branch — but settle the
    `Direction.primaryStep(for: .vertical)` sign first, or the change inverts focus
    instead of fixing it. Closes BarutSRB/OmniWM#474. Bundle with **O4** (vertical
    container move animation, self-contained in `NiriNode`) as "make portrait usable,
    phase 1"; **O5** (gesture axis) is phase 2.
-8. **🔴 Multitouch lifecycle recovery (M).** Land the diagnostic counter
+7. **🔴 Multitouch lifecycle recovery (M).** Land the diagnostic counter
    ("enumerated 0 devices while marking running") **first** so the fix is falsifiable,
    then verified startup + bounded coalesced retry + arrival/unlock revalidation.
    Plausible root cause for Nehir #53.
-9. **🔴 L1-E attribute-evidence predicate (XS) — land it with the `3f3d2fb9`
+8. **🔴 L1-E attribute-evidence predicate (XS) — land it with the `3f3d2fb9`
    classification fixture corpus (M).** The one-line predicate tightening shifts
    classification for *every* window, so the fixture corpus is a prerequisite, not a
    nice-to-have. Fold in L1-F (absent-vs-failed) as the same change.
-10. **🔴 `044441c4` destroy-evidence preservation (M).** Add the origin to
-    `PreparedDestroy`, gate `handleNativeFullscreenDestroy` on transient evidence, let
-    a definitive close upgrade a queued transient destroy. Well-fenced to
-    `AXEventHandler.swift`; composes with the planned VS Code create-side rekey work.
-11. **🔴 `7f300c31`(a) stop focusing on cancelled/aborted gestures (S).** Reduces the
+9. **🔴 `044441c4` destroy-evidence preservation (M).** Add the origin to
+   `PreparedDestroy`, gate `handleNativeFullscreenDestroy` on transient evidence, let
+   a definitive close upgrade a queued transient destroy. Well-fenced to
+   `AXEventHandler.swift`; composes with the planned VS Code create-side rekey work.
+10. **🔴 `7f300c31`(a) stop focusing on cancelled/aborted gestures (S).** Reduces the
     blast radius of the open fling-snap-overshoot discovery. Confirm with a repro
     (swipe interrupted by a fourth finger or a display change) first.
-12. **🔴 L1-D AX observer incarnation re-subscription (S).** Gate on a repro or a unit
+11. **🔴 L1-D AX observer incarnation re-subscription (S).** Gate on a repro or a unit
     test through `installSubscribedWindowsForTests`.
-13. **🔴 `2a7041d8` Focus Previous anchor from observed frontmost (S).** The only item
+12. **🔴 `2a7041d8` Focus Previous anchor from observed frontmost (S).** The only item
     that partially mitigates the stuck-focus cluster's user-visible symptoms.
 
 **Tier 3 — revise existing plans before delegating**
 
-14. **Revise `planned/20260619-nehir-62-move-workspace-to-monitor.md`.** Its mechanism
+13. **Revise `planned/20260619-nehir-62-move-workspace-to-monitor.md`.** Its mechanism
     is refuted by `WorkspaceManager.swift:4301-4309` and by Nehir's own test at
     `Tests/NehirTests/WorkspaceManagerTests.swift:900-928`; delegating it as written
     produces a command that no-ops for home-monitor users. Adopt `9babdb12`'s
     runtime-override + `force` model, keep Nehir's cyclic UX. S to revise, L to build.
-15. **Amend `planned/20260621-omniwm-283-per-app-initial-column-width.md`** to define
+14. **Amend `planned/20260621-omniwm-283-per-app-initial-column-width.md`** to define
     the app-rule field as an orientation-relative *initial container primary span*.
     Free now, expensive later (persisted-key migration).
     `planned/20260621-omniwm-295-niri-window-width-preservation.md` needs no change.
 
 **Tier 4 — cheap parity and verify-first**
 
-16. 🟡 IPC/CLI gap parity for `displays` (XS–S, purely additive to the wire model).
-17. 🟡 Batch of XS verifies: border corner-radius retry (`BorderManager.swift:149-158`),
+15. 🟡 IPC/CLI gap parity for `displays` (XS–S, purely additive to the wire model).
+16. 🟡 Batch of XS verifies: border corner-radius retry (`BorderManager.swift:149-158`),
     hotkey-advisory clearing after rebind, Terminal-app streak escalation under column
     stacking (`LayoutRefreshController.swift:4177`), shutdown surface teardown,
     pre-service-start topology refresh, bar island centring, SkyLight corner-radii ABI.
-18. 🟡 `6d0dd894` running-app picker (S) — real usability gap plus a clean extraction
+17. 🟡 `6d0dd894` running-app picker (S) — real usability gap plus a clean extraction
     out of the `WindowActionHandler` mega-file.
-19. 🟡 XS dead-code cleanup from `46de1498` — **but explicitly do not follow upstream in
+18. 🟡 XS dead-code cleanup from `46de1498` — **but explicitly do not follow upstream in
     deleting Nehir's live reduce-motion handling**; that is an accessibility regression.
 
 **Design decisions surfaced, not bugs:** FFM reveal policy (BarutSRB/OmniWM#468 and
@@ -691,11 +695,14 @@ display-UUID durable identity; guided multi-monitor setup; O3 "Move Up/Down alwa
 reorders within the container"; bar icon overrides; status-menu help cards;
 confirmed-only focus MRU; staleness-gated post-layout focus completion.
 
-**Explicitly not ported in this sweep:** the `WindowAdmission*` subsystem and
-`AXWindowEnumeration` as such (Nehir's admission logic has diverged too far for a diff
-apply — the value is in the extracted sub-findings); the terminal frame-refusal
-quarantine `348232a0` (Nehir's inferred-minimum strategy is the deliberate
-alternative, and upstream regressed on it — BarutSRB/OmniWM#518); `099f5b73` SkyLight
+**Explicitly not ported in this sweep:** the `a91f20e8` / `53901835` removal-time
+content-edge correction (Nehir intentionally allows persistent edge overscroll and
+preserves the viewport anchor on close; the port would add an unsolicited spring);
+the `WindowAdmission*` subsystem and `AXWindowEnumeration` as such (Nehir's admission
+logic has diverged too far for a diff apply — the value is in the extracted
+sub-findings); the terminal frame-refusal quarantine `348232a0` (Nehir's
+inferred-minimum strategy is the deliberate alternative, and upstream regressed on
+it — BarutSRB/OmniWM#518); `099f5b73` SkyLight
 park reconciliation (Nehir's verified-AX park is further along); `61542a3c`
 (no equivalent component); `58580ab5` Report Issue pipeline (no such feature yet);
 the O7 `column`→`container` rename (an unmigrated hard break conflicting with Nehir's
@@ -739,11 +746,14 @@ This doc accounts for upstream commits `be68cfbf..044441c4` (releases **0.5.7**,
 **0.5.8**, **0.5.9** plus post-0.5.9) and upstream issues/PRs updated on or after
 2026-07-13. **The running loop's next observation should resume from `044441c4`.**
 
-Nothing here supersedes the canonical roadmap's deferred lanes. It adds twelve
-source-confirmed 🔴 items — the largest yield of any sweep so far — restructures the
-orientation port from "large feature" into six stageable slices, corrects two
-verdicts the previous sweep recorded without verification (per-display gap IPC parity;
-PR BarutSRB/OmniWM#478, now settled as Nehir-originated), and flags two existing plans
-that must be revised before delegation. Several 🔴 items are explicitly gated on a
+Nothing here supersedes the canonical roadmap's deferred lanes. After the
+removal-clamp erratum, it adds **ten** source-confirmed 🔴 items — still the largest
+yield of any sweep so far — restructures the orientation port from "large feature"
+into six stageable slices, corrects two verdicts the previous sweep recorded without
+verification (per-display gap IPC parity; PR BarutSRB/OmniWM#478, now settled as
+Nehir-originated), and flags two existing plans that must be revised before
+delegation. The `a91f20e8` / `53901835` correction is explicitly rejected because
+matching pre-fix code shape did not account for Nehir's intentional edge-overscroll
+and minimum-movement policies. Several remaining 🔴 items are explicitly gated on a
 repro; those gates are stated per item and should not be dropped when the work is
 planned.
