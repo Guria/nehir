@@ -324,6 +324,7 @@ final class WindowRuleEngine {
     static let systemTextInputPanelRuleName = "systemTextInputPanel"
     private static let transientWindowServerSurfaceRuleName = "transientWindowServerSurface"
     private static let parentedWindowServerSurfaceRuleName = "parentedWindowServerSurface"
+    private static let nonWindowParentedSurfaceRuleName = "nonWindowParentedSurface"
     private static let degradedWindowServerChildSurfaceRuleName = "degradedWindowServerChildSurface"
     private static let transientSystemDialogSurfaceRuleName = "transientSystemDialogSurface"
     private static let cleanShotRecordingOverlayRuleName = "cleanShotRecordingOverlay"
@@ -688,6 +689,16 @@ final class WindowRuleEngine {
         )
     }
 
+    /// The single shared definition of "presents as a standard, user-addressable
+    /// AX window": AX role is a window and the subrole is either absent or the
+    /// standard one. Admission (the parented-surface rule below) and the
+    /// workspace-bar projection consult this same predicate, so the two gates
+    /// cannot disagree about the same surface.
+    static func presentsAsStandardAXWindowSurface(role: String?, subrole: String?) -> Bool {
+        guard role == kAXWindowRole as String else { return false }
+        return subrole == nil || subrole == kAXStandardWindowSubrole as String
+    }
+
     private func parentedWindowServerSurfaceDecision(
         for facts: WindowRuleFacts,
         workspaceName: String?,
@@ -697,6 +708,28 @@ final class WindowRuleEngine {
               parentId != 0
         else {
             return nil
+        }
+
+        // A parented WindowServer surface is only a window when its AX facts
+        // present as one. A child surface with a non-window AX role — Finder's
+        // inline-rename AXTextField editor, popovers, helper surfaces — is
+        // app-owned ephemeral UI: admitting it as a managed window drives a
+        // layout refresh whose focus recovery fronts the parent window,
+        // dismissing the surface the user is typing into (#179). A failed AX
+        // fetch keeps the managed-floating fallback below: "unknown" must not
+        // be read as "non-standard" and silently unmanage a real child window.
+        if facts.ax.attributeFetchSucceeded,
+           !Self.presentsAsStandardAXWindowSurface(role: facts.ax.role, subrole: facts.ax.subrole)
+        {
+            return WindowDecision(
+                disposition: .unmanaged,
+                source: .builtInRule(Self.nonWindowParentedSurfaceRuleName),
+                layoutDecisionKind: .explicitLayout,
+                workspaceName: nil,
+                ruleEffects: .none,
+                heuristicReasons: [],
+                deferredReason: nil
+            )
         }
 
         return WindowDecision(

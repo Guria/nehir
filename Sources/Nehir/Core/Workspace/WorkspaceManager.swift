@@ -2795,8 +2795,10 @@ final class WorkspaceManager {
     }
 
     private func isStandardAXWindowSurface(_ metadata: ManagedReplacementMetadata?) -> Bool {
-        guard metadata?.role == kAXWindowRole as String else { return false }
-        return metadata?.subrole == nil || metadata?.subrole == kAXStandardWindowSubrole as String
+        WindowRuleEngine.presentsAsStandardAXWindowSurface(
+            role: metadata?.role,
+            subrole: metadata?.subrole
+        )
     }
 
     private func recordFloatingBarProjectionTrace(
@@ -3365,7 +3367,7 @@ final class WorkspaceManager {
     func restoreFromNativeState(for token: WindowToken) -> ParentKind? {
         let wasNative = layoutReason(for: token) != .standard
         let restored = windows.restoreFromNativeState(for: token)
-        if (restored != nil || wasNative), let workspaceId = workspace(for: token) {
+        if restored != nil || wasNative, let workspaceId = workspace(for: token) {
             recordReconcileEvent(
                 .nativeFullscreenTransition(
                     token: token,
