@@ -30,16 +30,28 @@ no `disable-model-invocation`, so the model loads them by description.
 - `nehir-doc-review` — before saving a durable document.
 
 **Workflows** run only when invoked as a slash command. They set
-`disable-model-invocation: true` so they never fire on their own.
+`disable-model-invocation: true` so they never fire on their own. They are
+listed in the order the work usually moves through them.
 
-- `/nehir-bug-discovery <symptom> [trace]` — trace-driven, source-backed
+- `/nehir-bug-discovery [trace] <symptom>` — trace-driven, source-backed
   investigation ending in a self-contained discovery and a proposed plan.
+- `/nehir-retry-with-new-trace <trace> [#NN]` — re-open the investigation after
+  an attempted fix failed and a new trace was captured from a build containing
+  it: retire the prior hypothesis, classify the failure mode, update the
+  existing discovery in place.
 - `/nehir-delegate-lane <cluster>` — scope one isolated lane, bootstrap it, and
   hand it to the `lane-worker` subagent with both fences attached.
 - `/nehir-finalize-change [#NN]` — changeset fragment and commit message, with
   every git action still gated.
 - `/nehir-review-triage <findings>` — classify findings against the current code
   as confirmed, stale, or false positive before fixing anything.
+
+`argument-hint` ordering convention: every workflow reads the whole invocation
+through `$ARGUMENTS`, so the hint's order is advice to the human, not a
+positional signature. Put concrete references — a trace path, an issue number, a
+document — first, and free prose last, because prose has no terminator and
+anything written after it is ambiguous to read back. Requiredness is carried by
+`<>` versus `[]`, not by position.
 
 ## Subagents
 

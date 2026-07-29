@@ -1,14 +1,14 @@
 ---
 name: nehir-bug-discovery
 description: Run a trace-driven, source-backed bug discovery and produce a self-contained discovery document plus a proposed plan. Invoke explicitly with /nehir-bug-discovery when a runtime symptom needs investigation before any code change.
-argument-hint: '<symptom> [trace path]'
+argument-hint: '[trace path] <symptom>'
 disable-model-invocation: true
 allowed-tools: Read, Grep, Glob, Bash(git log:*), Bash(git show:*), Bash(git diff:*), Write, Edit, Skill
 ---
 
 # Trace-driven bug discovery
 
-SYMPTOM AND TRACE: $ARGUMENTS
+TRACE AND SYMPTOM: $ARGUMENTS
 
 If the symptom is missing, ask for it before starting. If no trace was named,
 ask whether one exists rather than assuming.
