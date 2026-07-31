@@ -332,6 +332,7 @@ final class WindowRuleEngine {
     private static let geckoCompactTransientDialogRuleName = "geckoCompactTransientDialog"
     private static let ghosttyQuickTerminalRuleName = "ghosttyQuickTerminalOverlay"
     private static let ghosttyBundleId = "com.mitchellh.ghostty"
+    private static let qutebrowserBundleId = "org.qutebrowser.qutebrowser"
     private static let geckoBundleIds: Set<String> = [
         "org.mozilla.thunderbird",
         "org.mozilla.firefox",
@@ -705,7 +706,7 @@ final class WindowRuleEngine {
         if subrole == nil || subrole == kAXStandardWindowSubrole as String {
             return true
         }
-        return bundleId == "org.qutebrowser.qutebrowser"
+        return bundleId?.caseInsensitiveCompare(Self.qutebrowserBundleId) == .orderedSame
             && subrole == kAXDialogSubrole as String
             && windowLevel == 0
             && (parentWindowId == nil || parentWindowId == 0)
