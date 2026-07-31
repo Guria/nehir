@@ -88,6 +88,48 @@ func makeLayoutPlanTestWindow(windowId: Int = 101) -> AXWindowRef {
     AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: windowId)
 }
 
+func makeQuickTerminalWindowInfoForTests(
+    pid: pid_t,
+    windowId: Int
+) -> WindowServerInfo {
+    var windowServer = WindowServerInfo(
+        id: UInt32(windowId),
+        pid: pid,
+        level: 3,
+        frame: CGRect(x: 0, y: 40, width: 1_920, height: 1_000)
+    )
+    windowServer.tags = 0x2
+    return windowServer
+}
+
+func makeQuickTerminalFactsForTests(
+    pid: pid_t,
+    windowId: Int,
+    windowServer: WindowServerInfo? = nil
+) -> WindowRuleFacts {
+    WindowRuleFacts(
+        appName: "Ghostty",
+        ax: AXWindowFacts(
+            role: kAXWindowRole as String,
+            subrole: kAXFloatingWindowSubrole as String,
+            title: "Terminal",
+            hasCloseButton: true,
+            hasFullscreenButton: false,
+            fullscreenButtonEnabled: nil,
+            hasZoomButton: true,
+            hasMinimizeButton: true,
+            appPolicy: .regular,
+            bundleId: "com.mitchellh.ghostty",
+            attributeFetchSucceeded: true
+        ),
+        sizeConstraints: nil,
+        windowServer: windowServer ?? makeQuickTerminalWindowInfoForTests(
+            pid: pid,
+            windowId: windowId
+        )
+    )
+}
+
 @MainActor
 func installSynchronousFrameApplySuccessOverride(on controller: WMController) {
     controller.axManager.frameApplyOverrideForTests = { requests in

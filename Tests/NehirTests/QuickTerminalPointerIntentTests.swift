@@ -35,7 +35,16 @@ struct QuickTerminalPointerIntentTests {
             )
         )
         controller.hasStartedServices = true
-        defer { controller.axEventHandler.resetDebugStateForTests() }
+        defer {
+            controller.axEventHandler.windowInfoProviderIsAuthoritativeForTests = false
+            controller.axEventHandler.windowInfoProvider = nil
+            controller.axEventHandler.windowOrderedInProvider = nil
+            controller.axEventHandler.visibleWindowInfoProvider = nil
+            controller.axEventHandler.focusedWindowRefProvider = nil
+            controller.axEventHandler.isFullscreenProvider = nil
+            controller.axEventHandler.frontmostApplicationPidProvider = nil
+            controller.axEventHandler.resetDebugStateForTests()
+        }
         guard let workspaceId = controller.interactionWorkspace()?.id,
               let monitorId = controller.workspaceManager.monitorId(for: workspaceId)
         else {
@@ -46,6 +55,19 @@ struct QuickTerminalPointerIntentTests {
         let ghosttyPid: pid_t = 82_101
         let qutebrowserPid: pid_t = 82_102
         let overlayWindowId = 82_001
+        let overlayInfo = makeQuickTerminalWindowInfoForTests(
+            pid: ghosttyPid,
+            windowId: overlayWindowId
+        )
+        controller.axEventHandler.windowInfoProviderIsAuthoritativeForTests = true
+        controller.axEventHandler.windowInfoProvider = { windowId in
+            windowId == overlayInfo.id ? overlayInfo : nil
+        }
+        controller.axEventHandler.windowOrderedInProvider = { windowId in
+            windowId == overlayInfo.id ? true : nil
+        }
+        controller.axEventHandler.visibleWindowInfoProvider = { [overlayInfo] }
+
         let staleGhosttyToken = controller.workspaceManager.addWindow(
             AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: 82_002),
             pid: ghosttyPid,
@@ -78,7 +100,11 @@ struct QuickTerminalPointerIntentTests {
         controller.axEventHandler.armOverlayCapabilityIfNeeded(
             source: .builtInRule("ghosttyQuickTerminalOverlay"),
             token: WindowToken(pid: ghosttyPid, windowId: overlayWindowId),
-            facts: quickTerminalFacts(pid: ghosttyPid, windowId: overlayWindowId)
+            facts: makeQuickTerminalFactsForTests(
+                pid: ghosttyPid,
+                windowId: overlayWindowId,
+                windowServer: overlayInfo
+            )
         )
 
         // WindowServer hit testing can return both the floating window and the
@@ -104,39 +130,21 @@ struct QuickTerminalPointerIntentTests {
         )
         #expect(controller.workspaceManager.confirmedManagedFocusToken == clickedQutebrowserToken)
 
+        // Make the internal confirmation stale while AX and the frontmost-app
+        // boundary still report the pointer-selected qutebrowser window. Overlay
+        // teardown must adopt that already-focused anchor without refocusing it.
+        #expect(controller.workspaceManager.setManagedFocus(
+            staleGhosttyToken,
+            in: workspaceId,
+            onMonitor: monitorId
+        ))
+        controller.axEventHandler.frontmostApplicationPidProvider = { qutebrowserPid }
+
         fronted.reset()
         controller.axEventHandler.handleRemoved(pid: ghosttyPid, winId: overlayWindowId)
 
         #expect(fronted.tokens.isEmpty)
         #expect(controller.workspaceManager.activeFocusRequestToken == nil)
         #expect(controller.workspaceManager.confirmedManagedFocusToken == clickedQutebrowserToken)
-    }
-
-    private func quickTerminalFacts(pid: pid_t, windowId: Int) -> WindowRuleFacts {
-        var windowServer = WindowServerInfo(
-            id: UInt32(windowId),
-            pid: pid,
-            level: 3,
-            frame: CGRect(x: 0, y: 40, width: 1_920, height: 1_000)
-        )
-        windowServer.tags = 0x2
-        return WindowRuleFacts(
-            appName: "Ghostty",
-            ax: AXWindowFacts(
-                role: kAXWindowRole as String,
-                subrole: kAXFloatingWindowSubrole as String,
-                title: "Terminal",
-                hasCloseButton: true,
-                hasFullscreenButton: false,
-                fullscreenButtonEnabled: nil,
-                hasZoomButton: true,
-                hasMinimizeButton: true,
-                appPolicy: .regular,
-                bundleId: "com.mitchellh.ghostty",
-                attributeFetchSucceeded: true
-            ),
-            sizeConstraints: nil,
-            windowServer: windowServer
-        )
     }
 }

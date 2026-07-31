@@ -45,7 +45,7 @@ struct QuickTerminalStartupLifecycleTests {
             onMonitor: monitorId
         ))
 
-        let overlayInfo = quickTerminalWindowInfo(pid: ghosttyPid, windowId: 99_003)
+        let overlayInfo = makeQuickTerminalWindowInfoForTests(pid: ghosttyPid, windowId: 99_003)
         controller.hasStartedServices = true
         controller.axEventHandler.visibleWindowInfoProvider = { [overlayInfo] }
         controller.axEventHandler.windowInfoProviderIsAuthoritativeForTests = true
@@ -65,7 +65,11 @@ struct QuickTerminalStartupLifecycleTests {
         }
         controller.axEventHandler.windowFactsProvider = { axRef, pid in
             if axRef.windowId == Int(overlayInfo.id) {
-                return quickTerminalFacts(windowInfo: overlayInfo)
+                return makeQuickTerminalFactsForTests(
+                    pid: ghosttyPid,
+                    windowId: Int(overlayInfo.id),
+                    windowServer: overlayInfo
+                )
             }
             return standardWindowFacts(pid: pid, windowId: axRef.windowId)
         }
@@ -106,36 +110,54 @@ struct QuickTerminalStartupLifecycleTests {
         })
     }
 
-    private func quickTerminalWindowInfo(pid: pid_t, windowId: UInt32) -> WindowServerInfo {
-        var info = WindowServerInfo(
-            id: windowId,
-            pid: pid,
-            level: 3,
-            frame: CGRect(x: 0, y: 40, width: 1_920, height: 1_000)
+    @Test func recognizedOverlaySkipsFocusedWindowChurnScanButSamplesAppActivation() {
+        let controller = makeLayoutPlanTestController()
+        let ghosttyPid: pid_t = 99_103
+        let overlayWindowId = 99_004
+        let overlayInfo = makeQuickTerminalWindowInfoForTests(
+            pid: ghosttyPid,
+            windowId: overlayWindowId
         )
-        info.tags = 0x2
-        return info
-    }
+        controller.axEventHandler.armOverlayCapabilityIfNeeded(
+            source: .builtInRule("ghosttyQuickTerminalOverlay"),
+            token: WindowToken(pid: ghosttyPid, windowId: overlayWindowId),
+            facts: makeQuickTerminalFactsForTests(
+                pid: ghosttyPid,
+                windowId: overlayWindowId,
+                windowServer: overlayInfo
+            )
+        )
+        controller.axEventHandler.windowInfoProviderIsAuthoritativeForTests = true
+        controller.axEventHandler.windowInfoProvider = { windowId in
+            windowId == overlayInfo.id ? overlayInfo : nil
+        }
+        controller.axEventHandler.windowOrderedInProvider = { windowId in
+            windowId == overlayInfo.id ? true : nil
+        }
+        var visibleWindowScanCount = 0
+        controller.axEventHandler.visibleWindowInfoProvider = {
+            visibleWindowScanCount += 1
+            return [overlayInfo]
+        }
+        defer {
+            controller.axEventHandler.windowInfoProviderIsAuthoritativeForTests = false
+            controller.axEventHandler.windowInfoProvider = nil
+            controller.axEventHandler.windowOrderedInProvider = nil
+            controller.axEventHandler.visibleWindowInfoProvider = nil
+            controller.axEventHandler.resetDebugStateForTests()
+        }
 
-    private func quickTerminalFacts(windowInfo: WindowServerInfo) -> WindowRuleFacts {
-        WindowRuleFacts(
-            appName: "Ghostty",
-            ax: AXWindowFacts(
-                role: kAXWindowRole as String,
-                subrole: kAXFloatingWindowSubrole as String,
-                title: "Terminal",
-                hasCloseButton: true,
-                hasFullscreenButton: false,
-                fullscreenButtonEnabled: nil,
-                hasZoomButton: true,
-                hasMinimizeButton: true,
-                appPolicy: .regular,
-                bundleId: "com.mitchellh.ghostty",
-                attributeFetchSucceeded: true
-            ),
-            sizeConstraints: nil,
-            windowServer: windowInfo
+        controller.axEventHandler.handleAppActivation(
+            pid: ghosttyPid,
+            source: .focusedWindowChanged
         )
+        #expect(visibleWindowScanCount == 0)
+
+        controller.axEventHandler.handleAppActivation(
+            pid: ghosttyPid,
+            source: .workspaceDidActivateApplication
+        )
+        #expect(visibleWindowScanCount == 1)
     }
 
     private func standardWindowFacts(pid: pid_t, windowId: Int) -> WindowRuleFacts {
