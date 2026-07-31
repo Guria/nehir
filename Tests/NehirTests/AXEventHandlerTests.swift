@@ -89,11 +89,18 @@ private func currentTestBundleId() -> String {
     "com.example.TestApp"
 }
 
+private let stableOffscreenAXEventWindowFrame = CGRect(
+    x: -10_000,
+    y: -10_000,
+    width: 640,
+    height: 420
+)
+
 private func makeAXEventWindowInfo(
     id: UInt32,
     pid: pid_t = getpid(),
     title: String? = nil,
-    frame: CGRect = .zero,
+    frame: CGRect = stableOffscreenAXEventWindowFrame,
     parentId: UInt32? = nil
 ) -> WindowServerInfo {
     var info = WindowServerInfo(id: id, pid: pid, level: 0, frame: frame)
@@ -493,7 +500,7 @@ private func waitUntilAXEventTest(
 
         controller.axEventHandler.windowInfoProvider = { windowId in
             guard windowId == 814 else { return nil }
-            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, _ in
             AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
@@ -534,7 +541,7 @@ private func waitUntilAXEventTest(
 
         controller.axEventHandler.windowInfoProvider = { windowId in
             guard windowId == 815 else { return nil }
-            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, _ in
             AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
@@ -621,7 +628,7 @@ private func waitUntilAXEventTest(
 
             controller.axEventHandler.windowInfoProvider = { windowId in
                 guard windowId == 817 else { return nil }
-                return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+                return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
             }
             controller.axEventHandler.axWindowRefProvider = { windowId, _ in
                 guard windowId == 817 else { return nil }
@@ -691,7 +698,7 @@ private func waitUntilAXEventTest(
                 guard windowId == 820 else { return nil }
                 windowInfoLookupCount += 1
                 guard windowInfoReady else { return nil }
-                return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+                return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
             }
             controller.axEventHandler.axWindowRefProvider = { windowId, _ in
                 guard windowId == 820 else { return nil }
@@ -736,7 +743,7 @@ private func waitUntilAXEventTest(
 
             controller.axEventHandler.windowInfoProvider = { windowId in
                 guard windowId == 818 else { return nil }
-                return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+                return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
             }
             controller.axEventHandler.axWindowRefProvider = { windowId, _ in
                 guard windowId == 818, axWindowRefReady else { return nil }
@@ -778,7 +785,7 @@ private func waitUntilAXEventTest(
 
         controller.axEventHandler.windowInfoProvider = { windowId in
             guard windowId == 819 else { return nil }
-            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, _ in
             guard windowId == 819 else { return nil }
@@ -1807,7 +1814,7 @@ private func waitUntilAXEventTest(
         )
     }
 
-    @Test @MainActor func untrackedSamePidDestroySuppressesUnrelatedInactiveWorkspaceActivation() async {
+    @Test @MainActor func untrackedSamePidDestroyDoesNotSuppressInactiveWorkspaceActivation() async {
         let controller = makeAXEventTestController()
         controller.hasStartedServices = true
         guard let workspaceOne = controller.workspaceManager.workspaceId(for: "1", createIfMissing: false),
@@ -1847,7 +1854,10 @@ private func waitUntilAXEventTest(
 
         controller.axEventHandler.handleRemoved(pid: focusedPid, winId: 101)
 
-        #expect(controller.focusPolicyEngine.activeLease?.owner == .windowCloseFocusRecovery)
+        // An unrelated untracked destroy is diagnostic evidence only. It must
+        // not create a close-recovery lease that can veto a deliberate app
+        // activation on another workspace.
+        #expect(controller.focusPolicyEngine.activeLease == nil)
         #expect(controller.workspaceManager.confirmedManagedFocusToken == focusedToken)
         #expect(controller.interactionWorkspace()?.id == workspaceTwo)
 
@@ -1855,14 +1865,18 @@ private func waitUntilAXEventTest(
             pid: inactiveToken.pid,
             source: .workspaceDidActivateApplication
         )
+        await waitUntilAXEventTest(iterations: 300) {
+            controller.workspaceManager.confirmedManagedFocusToken == inactiveToken &&
+                controller.interactionWorkspace()?.id == workspaceOne
+        }
         await controller.layoutRefreshController.waitForRefreshWorkForTests()
 
-        #expect(controller.focusPolicyEngine.activeLease?.owner == .windowCloseFocusRecovery)
-        #expect(controller.workspaceManager.confirmedManagedFocusToken == focusedToken)
-        #expect(controller.interactionWorkspace()?.id == workspaceTwo)
+        #expect(controller.focusPolicyEngine.activeLease?.owner == .nativeAppSwitch)
+        #expect(controller.workspaceManager.confirmedManagedFocusToken == inactiveToken)
+        #expect(controller.interactionWorkspace()?.id == workspaceOne)
     }
 
-    @Test @MainActor func focusedWindowChangedOnEmptyActiveWorkspaceSuppressesInactiveWorkspaceActivation() async {
+    @Test @MainActor func focusedWindowChangedAfterUntrackedDestroyAllowsInactiveWorkspaceActivation() async {
         let controller = makeAXEventTestController()
         controller.hasStartedServices = true
         guard let workspaceOne = controller.workspaceManager.workspaceId(for: "1", createIfMissing: false),
@@ -1889,14 +1903,15 @@ private func waitUntilAXEventTest(
             return AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: inactiveToken.windowId)
         }
 
-        // The guard only applies to successor-focus churn after one of the app's
-        // windows closes; simulate that close first.
+        // An untracked same-pid destroy does not prove that the focused window
+        // is close-recovery churn. The authoritative focused-window event must
+        // still reveal and confirm its managed target.
         controller.axEventHandler.handleRemoved(pid: appPid, winId: 9_799)
         controller.axEventHandler.handleAppActivation(pid: appPid, source: .focusedWindowChanged)
         await controller.layoutRefreshController.waitForRefreshWorkForTests()
 
-        #expect(controller.interactionWorkspace()?.id == workspaceTwo)
-        #expect(controller.workspaceManager.confirmedManagedFocusToken == nil)
+        #expect(controller.interactionWorkspace()?.id == workspaceOne)
+        #expect(controller.workspaceManager.confirmedManagedFocusToken == inactiveToken)
     }
 
     @Test @MainActor func reconfirmedFocusViaFocusedWindowChangedPreservesViewport() async {
@@ -5382,7 +5397,7 @@ private func waitUntilAXEventTest(
 
         var subscriptions: [[UInt32]] = []
         controller.axEventHandler.windowInfoProvider = { windowId in
-            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, _ in
             AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
@@ -5429,7 +5444,7 @@ private func waitUntilAXEventTest(
             guard windowId == 840 else { return nil }
             windowInfoLookupCount += 1
             guard windowInfoReady else { return nil }
-            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, _ in
             guard windowId == 840 else { return nil }
@@ -5948,7 +5963,7 @@ private func waitUntilAXEventTest(
         #expect((flushElapsedMillis.first ?? 0) >= 130)
     }
 
-    @Test @MainActor func structuralReplacementAmbiguousMultiCreateBurstFlushesWithoutRekeying() async {
+    @Test @MainActor func structuralReplacementAmbiguousMultiCreateBurstRekeysEarliestCreate() async {
         let controller = makeAXEventTestController(trackedBundleId: currentTestBundleId())
         guard let workspaceId = controller.interactionWorkspace()?.id else {
             Issue.record("Missing active workspace")
@@ -6076,11 +6091,14 @@ private func waitUntilAXEventTest(
 
         #expect(controller.workspaceManager.entry(for: oldToken) == nil)
         #expect(siblingCurrentEntry.handle === siblingEntry.handle)
-        #expect(firstNewEntry.handle !== oldEntry.handle)
+        // Metadata-identical creates are paired in event order. Preserving one
+        // identity is preferable to tearing down both candidates and avoids a
+        // layout jump during native-tab churn.
+        #expect(firstNewEntry.handle === oldEntry.handle)
         #expect(firstNewEntry.handle !== siblingEntry.handle)
         #expect(secondNewEntry.handle !== oldEntry.handle)
         #expect(secondNewEntry.handle !== siblingEntry.handle)
-        #expect(structuralManagedReplacementMatchedElapsedMillis(on: controller) == nil)
+        #expect(structuralManagedReplacementMatchedElapsedMillis(on: controller) != nil)
         let flushElapsedMillis = structuralManagedReplacementFlushElapsedMillis(on: controller)
         #expect((flushElapsedMillis.last ?? 0) >= 130)
         #expect((flushElapsedMillis.last ?? .max) < 250)
@@ -6379,7 +6397,7 @@ private func waitUntilAXEventTest(
         #expect(relayoutReasons.isEmpty)
     }
 
-    @Test @MainActor func browserReplacementDoesNotCoalesceAmbiguousMultipleCreates() async {
+    @Test @MainActor func browserReplacementRekeysEarliestAmbiguousCreate() async {
         let controller = makeAXEventTestController(trackedBundleId: "com.google.Chrome")
         guard let workspaceId = controller.interactionWorkspace()?.id else {
             Issue.record("Missing active workspace")
@@ -6460,11 +6478,11 @@ private func waitUntilAXEventTest(
         }
 
         #expect(controller.workspaceManager.entry(for: oldToken) == nil)
-        #expect(firstNewEntry.handle !== oldEntry.handle)
+        #expect(firstNewEntry.handle === oldEntry.handle)
         #expect(secondNewEntry.handle !== oldEntry.handle)
-        #expect(controller.workspaceManager.tiledEntries(in: workspaceId).isEmpty)
-        #expect(controller.workspaceManager.floatingEntries(in: workspaceId).count == 2)
-        #expect(engine.columns(in: workspaceId).isEmpty)
+        #expect(controller.workspaceManager.tiledEntries(in: workspaceId).count == 1)
+        #expect(controller.workspaceManager.floatingEntries(in: workspaceId).count == 1)
+        #expect(engine.columns(in: workspaceId).count == 1)
     }
 
     @Test @MainActor func structuralReplacementRekeysUnlistedAppWithoutAllowlist() async {
@@ -6931,7 +6949,7 @@ private func waitUntilAXEventTest(
         var subscriptions: [[UInt32]] = []
         var relayoutReasons: [RefreshReason] = []
         controller.axEventHandler.windowInfoProvider = { windowId in
-            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, _ in
             AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
@@ -7001,7 +7019,7 @@ private func waitUntilAXEventTest(
         }
         controller.axEventHandler.windowInfoProvider = { windowId in
             guard windowId == createdWindowId else { return nil }
-            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, candidatePid in
             guard windowId == createdWindowId, candidatePid == getpid() else { return nil }
@@ -7133,7 +7151,11 @@ private func waitUntilAXEventTest(
             #expect(controller.workspaceManager.setInteractionMonitor(primaryMonitor.id))
 
             let createdWindowId: UInt32 = 8433
-            let createdInfo = makeAXEventWindowInfo(id: createdWindowId, pid: getpid(), frame: .zero)
+            let createdInfo = makeAXEventWindowInfo(
+                id: createdWindowId,
+                pid: getpid(),
+                frame: stableOffscreenAXEventWindowFrame
+            )
             AXWindowService.fastFrameProviderForTests = { axRef in
                 guard axRef.windowId == Int(createdWindowId) else { return nil }
                 return CGRect(
@@ -7270,7 +7292,7 @@ private func waitUntilAXEventTest(
         var createdInfo = makeAXEventWindowInfo(
             id: createdWindowId,
             pid: pid,
-            frame: .zero,
+            frame: stableOffscreenAXEventWindowFrame,
             parentId: UInt32(siblingToken.windowId)
         )
         createdInfo.tags = 0x1
@@ -7332,7 +7354,7 @@ private func waitUntilAXEventTest(
                 freshWorkspaceId,
                 on: monitor.id
             )
-            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, candidatePid in
             guard windowId == createdWindowId, candidatePid == getpid() else { return nil }
@@ -7384,7 +7406,7 @@ private func waitUntilAXEventTest(
         controller.axEventHandler.windowInfoProvider = { windowId in
             guard windowId == createdWindowId else { return nil }
             _ = controller.workspaceManager.setActiveWorkspace(freshPrimaryWorkspaceId, on: primaryMonitor.id)
-            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            return WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, candidatePid in
             guard windowId == createdWindowId, candidatePid == getpid() else { return nil }
@@ -7438,7 +7460,7 @@ private func waitUntilAXEventTest(
         _ = controller.workspaceManager.setInteractionMonitor(secondaryMonitor.id)
 
         let createdWindowId: UInt32 = 8301
-        let createdInfo = makeAXEventWindowInfo(id: createdWindowId, pid: pid, frame: .zero)
+        let createdInfo = makeAXEventWindowInfo(id: createdWindowId, pid: pid, frame: stableOffscreenAXEventWindowFrame)
         controller.axEventHandler.spaceDisplayResolver = { _, _ in nil }
         controller.axEventHandler.windowInfoProvider = { windowId in
             guard windowId == createdWindowId else { return nil }
@@ -7514,7 +7536,11 @@ private func waitUntilAXEventTest(
             #expect(controller.workspaceManager.setInteractionMonitor(primaryMonitor.id))
 
             let createdWindowId: UInt32 = 8303
-            let createdInfo = makeAXEventWindowInfo(id: createdWindowId, pid: pid, frame: .zero)
+            let createdInfo = makeAXEventWindowInfo(
+                id: createdWindowId,
+                pid: pid,
+                frame: stableOffscreenAXEventWindowFrame
+            )
             controller.axEventHandler.spaceDisplayResolver = { _, _ in nil }
             controller.axEventHandler.windowInfoProvider = { windowId in
                 guard windowId == createdWindowId else { return nil }
@@ -7605,7 +7631,11 @@ private func waitUntilAXEventTest(
             #expect(controller.workspaceManager.interactionMonitorId == primaryMonitor.id)
 
             let createdWindowId: UInt32 = 8306
-            let createdInfo = makeAXEventWindowInfo(id: createdWindowId, pid: pid, frame: .zero)
+            let createdInfo = makeAXEventWindowInfo(
+                id: createdWindowId,
+                pid: pid,
+                frame: stableOffscreenAXEventWindowFrame
+            )
             controller.axEventHandler.spaceDisplayResolver = { _, _ in nil }
             controller.axEventHandler.windowInfoProvider = { windowId in
                 guard windowId == createdWindowId else { return nil }
@@ -7843,7 +7873,7 @@ private func waitUntilAXEventTest(
     }
 
     @Test @MainActor
-    func createdWindowUsesFastFrameMonitorBeforeStaleInteractionAndRule() async {
+    func createdWindowUsesCoherentWindowServerFrameBeforeStaleInteractionAndRule() async {
         await withAXFrameProviderIsolationForTests {
             let bundleId = "com.example.fast-frame-placement"
             let controller = makeAXEventTestController(
@@ -7881,17 +7911,16 @@ private func waitUntilAXEventTest(
             #expect(controller.workspaceManager.entry(for: siblingToken)?.workspaceId == primaryWorkspaceId)
 
             let createdWindowId: UInt32 = 8311
-            let createdInfo = makeAXEventWindowInfo(id: createdWindowId, pid: pid, frame: .zero)
-            AXWindowService.fastFrameProviderForTests = { axRef in
-                guard axRef.windowId == Int(createdWindowId) else { return nil }
-                return CGRect(
+            let createdInfo = makeAXEventWindowInfo(
+                id: createdWindowId,
+                pid: pid,
+                frame: CGRect(
                     x: secondaryMonitor.visibleFrame.minX + 140,
                     y: secondaryMonitor.visibleFrame.minY + 140,
                     width: 720,
                     height: 460
                 )
-            }
-            defer { AXWindowService.fastFrameProviderForTests = nil }
+            )
 
             controller.axEventHandler.spaceDisplayResolver = { _, _ in nil }
             controller.axEventHandler.windowInfoProvider = { windowId in
@@ -7959,7 +7988,11 @@ private func waitUntilAXEventTest(
 
             let pid = getpid()
             let createdWindowId: UInt32 = 8321
-            let createdInfo = makeAXEventWindowInfo(id: createdWindowId, pid: pid, frame: .zero)
+            let createdInfo = makeAXEventWindowInfo(
+                id: createdWindowId,
+                pid: pid,
+                frame: stableOffscreenAXEventWindowFrame
+            )
             var windowInfoReady = false
             var windowInfoLookupCount = 0
             let previousFastFrameProvider = AXWindowService.fastFrameProviderForTests
@@ -8106,7 +8139,7 @@ private func waitUntilAXEventTest(
         let createdWindowId: UInt32 = 843
         controller.axEventHandler.windowInfoProvider = { windowId in
             guard windowId == createdWindowId else { return nil }
-            return WindowServerInfo(id: windowId, pid: pid, level: 0, frame: .zero)
+            return WindowServerInfo(id: windowId, pid: pid, level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, candidatePid in
             guard windowId == createdWindowId, candidatePid == pid else { return nil }
@@ -8170,7 +8203,7 @@ private func waitUntilAXEventTest(
         var createdInfo = makeAXEventWindowInfo(
             id: createdWindowId,
             pid: pid,
-            frame: .zero,
+            frame: stableOffscreenAXEventWindowFrame,
             parentId: UInt32(parentWindowId)
         )
         createdInfo.tags = 0x1
@@ -8243,7 +8276,7 @@ private func waitUntilAXEventTest(
         var childInfo = makeAXEventWindowInfo(
             id: createdWindowId,
             pid: pid,
-            frame: .zero,
+            frame: stableOffscreenAXEventWindowFrame,
             parentId: 844
         )
         childInfo.tags = 0x2
@@ -8258,7 +8291,7 @@ private func waitUntilAXEventTest(
         controller.axEventHandler.windowFactsProvider = { _, _ in
             makeAXEventWindowRuleFacts(
                 bundleId: bundleId,
-                subrole: "AXDialog",
+                subrole: kAXStandardWindowSubrole as String,
                 hasFullscreenButton: false,
                 hasZoomButton: false,
                 windowServer: childInfo
@@ -8369,92 +8402,6 @@ private func waitUntilAXEventTest(
         #expect(controller.workspaceManager.entry(for: oldToken) == nil)
         #expect(controller.workspaceManager.entry(for: replacementToken)?.handle === oldEntry.handle)
         #expect(controller.workspaceManager.entry(for: replacementToken)?.workspaceId == replacementWorkspaceId)
-    }
-
-    @Test @MainActor func parentedFloatingDialogDoesNotStructurallyRekeyOverParent() async {
-        let bundleId = "com.example.parented-dialog-rekey"
-        let controller = makeAXEventTestController(trackedBundleId: bundleId)
-        guard let workspaceId = controller.interactionWorkspace()?.id else {
-            Issue.record("Missing active workspace")
-            return
-        }
-
-        let parentInfo = makeAXEventWindowInfo(
-            id: 848,
-            title: "Parent",
-            frame: CGRect(x: 120, y: 140, width: 760, height: 520)
-        )
-        let childInfo = makeAXEventWindowInfo(
-            id: 849,
-            title: "Parent Dialog",
-            frame: CGRect(x: 160, y: 180, width: 700, height: 460),
-            parentId: 848
-        )
-        let parentToken = controller.workspaceManager.addWindow(
-            AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: 848),
-            pid: getpid(),
-            windowId: 848,
-            to: workspaceId,
-            managedReplacementMetadata: makeManagedReplacementMetadata(
-                bundleId: bundleId,
-                workspaceId: workspaceId,
-                mode: .tiling,
-                title: parentInfo.title,
-                role: kAXWindowRole as String,
-                subrole: kAXDialogSubrole as String,
-                windowServer: parentInfo
-            )
-        )
-        guard let parentEntry = controller.workspaceManager.entry(for: parentToken) else {
-            Issue.record("Missing parent entry")
-            return
-        }
-
-        controller.axEventHandler.windowInfoProvider = { windowId in
-            switch windowId {
-            case 848:
-                parentInfo
-            case 849:
-                childInfo
-            default:
-                nil
-            }
-        }
-        controller.axEventHandler.axWindowRefProvider = { windowId, _ in
-            AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
-        }
-        controller.axEventHandler.windowFactsProvider = { axRef, _ in
-            let info = axRef.windowId == 849 ? childInfo : parentInfo
-            return makeAXEventWindowRuleFacts(
-                bundleId: bundleId,
-                title: info.title,
-                role: kAXWindowRole as String,
-                subrole: kAXDialogSubrole as String,
-                windowServer: info
-            )
-        }
-
-        let childToken = WindowToken(pid: getpid(), windowId: 849)
-
-        controller.axEventHandler.cgsEventObserver(
-            CGSEventObserver.shared,
-            didReceive: .destroyed(windowId: 848, spaceId: 0)
-        )
-        controller.axEventHandler.cgsEventObserver(
-            CGSEventObserver.shared,
-            didReceive: .created(windowId: 849, spaceId: 0)
-        )
-        controller.axEventHandler.flushPendingManagedReplacementEventsForTests()
-
-        guard let childEntry = controller.workspaceManager.entry(for: childToken) else {
-            Issue.record("Missing child entry")
-            return
-        }
-
-        #expect(controller.workspaceManager.entry(for: parentToken) == nil)
-        #expect(childEntry.handle !== parentEntry.handle)
-        #expect(childEntry.mode == .floating)
-        #expect(structuralManagedReplacementMatchedElapsedMillis(on: controller) == nil)
     }
 
     @Test @MainActor func degradedWindowServerChildDoesNotStructurallyRekeyOverParentBurst() async {
@@ -8590,7 +8537,7 @@ private func waitUntilAXEventTest(
         var createdInfo = makeAXEventWindowInfo(
             id: createdWindowId,
             pid: pid,
-            frame: .zero,
+            frame: stableOffscreenAXEventWindowFrame,
             parentId: UInt32(originalToken.windowId)
         )
         createdInfo.tags = 0x1
@@ -8655,7 +8602,7 @@ private func waitUntilAXEventTest(
         )
 
         controller.axEventHandler.windowInfoProvider = { windowId in
-            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, _ in
             AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
@@ -8738,7 +8685,7 @@ private func waitUntilAXEventTest(
             #expect(controller.workspaceManager.setActiveWorkspace(secondaryWorkspaceId, on: secondaryMonitor.id))
             installSynchronousFrameApplySuccessOverride(on: controller)
             controller.axEventHandler.windowInfoProvider = { windowId in
-                WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+                WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
             }
             controller.axEventHandler.axWindowRefProvider = { windowId, _ in
                 AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
@@ -8824,7 +8771,7 @@ private func waitUntilAXEventTest(
             }
         }
         controller.axEventHandler.windowInfoProvider = { windowId in
-            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, _ in
             AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
@@ -8907,7 +8854,7 @@ private func waitUntilAXEventTest(
         )
 
         controller.axEventHandler.windowInfoProvider = { windowId in
-            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, _ in
             AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
@@ -9263,7 +9210,7 @@ private func waitUntilAXEventTest(
 
         var relayoutReasons: [RefreshReason] = []
         controller.axEventHandler.windowInfoProvider = { windowId in
-            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, _ in
             AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
@@ -9320,7 +9267,7 @@ private func waitUntilAXEventTest(
 
         var relayoutReasons: [RefreshReason] = []
         controller.axEventHandler.windowInfoProvider = { windowId in
-            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: .zero)
+            WindowServerInfo(id: windowId, pid: getpid(), level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, _ in
             AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
@@ -9464,7 +9411,7 @@ private func waitUntilAXEventTest(
         }
         controller.axEventHandler.windowInfoProvider = { windowId in
             guard windowId == 824 else { return nil }
-            return WindowServerInfo(id: windowId, pid: pid, level: 103, frame: .zero)
+            return WindowServerInfo(id: windowId, pid: pid, level: 103, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, _ in
             AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
@@ -9641,7 +9588,7 @@ private func waitUntilAXEventTest(
         #expect(controller.workspaceManager.entry(for: token)?.mode == .tiling)
     }
 
-    @Test @MainActor func parentedFloatingChildDoesNotRetileNiriParent() async {
+    @Test @MainActor func parentedStandardChildDoesNotRetileNiriParent() async {
         let bundleId = "com.example.parented-floating-child"
         let controller = makeAXEventTestController(trackedBundleId: bundleId)
         installSynchronousFrameApplySuccessOverride(on: controller)
@@ -9766,7 +9713,7 @@ private func waitUntilAXEventTest(
                 makeAXEventWindowRuleFacts(
                     bundleId: bundleId,
                     title: childInfo.title,
-                    subrole: kAXDialogSubrole as String,
+                    subrole: kAXStandardWindowSubrole as String,
                     windowServer: childInfo
                 )
             default:
@@ -10093,7 +10040,7 @@ private func waitUntilAXEventTest(
         #expect(controller.workspaceManager.entry(forPid: originalPid, windowId: 902) == nil)
 
         controller.axEventHandler.windowInfoProvider = { windowId in
-            WindowServerInfo(id: windowId, pid: refreshedPid, level: 0, frame: .zero)
+            WindowServerInfo(id: windowId, pid: refreshedPid, level: 0, frame: stableOffscreenAXEventWindowFrame)
         }
         controller.axEventHandler.axWindowRefProvider = { windowId, _ in
             AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: Int(windowId))
@@ -10263,7 +10210,12 @@ private func waitUntilAXEventTest(
         var axEnumerationCount = 0
         controller.axEventHandler.windowInfoProvider = { windowId in
             guard windowId == 909 else { return nil }
-            return WindowServerInfo(id: windowId, pid: windowServerPid, level: 0, frame: .zero)
+            return WindowServerInfo(
+                id: windowId,
+                pid: windowServerPid,
+                level: 0,
+                frame: .zero
+            )
         }
         controller.axManager.perAppWindowEnumerationOverrideForTests = { _ in
             axEnumerationCount += 1
@@ -11092,75 +11044,6 @@ private func waitUntilAXEventTest(
                     workspaceId == bouncedWorkspaceId &&
                     contextFocusedWorkspaceId == recentWorkspaceId &&
                     contextFocusedMonitorId == monitor.id
-            }
-            return false
-        })
-    }
-
-    @Test @MainActor func focusedUntrackedStandardWindowAdmissionUsesFocusedAXRefWhenWindowInfoIsUnavailable() async {
-        let controller = makeAXEventTestController()
-        guard let workspaceId = controller.interactionWorkspace()?.id else {
-            Issue.record("Missing active workspace")
-            return
-        }
-
-        let admittedPid: pid_t = 9_166
-        let admittedWindowId = 9167
-        let admittedToken = WindowToken(pid: admittedPid, windowId: admittedWindowId)
-        let focusedAXRef = AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: admittedWindowId)
-        var subscribedWindows: [UInt32] = []
-        var relayoutReasons: [RefreshReason] = []
-
-        controller.hasStartedServices = true
-        controller.layoutRefreshController.resetDebugState()
-        controller.layoutRefreshController.debugHooks.onRelayout = { reason, _ in
-            relayoutReasons.append(reason)
-            return false
-        }
-        controller.axEventHandler.windowSubscriptionHandler = { windowIds in
-            subscribedWindows.append(contentsOf: windowIds)
-        }
-        controller.axEventHandler.windowInfoProvider = { _ in nil }
-        controller.axEventHandler.axWindowRefProvider = { _, _ in nil }
-        controller.axEventHandler.focusedWindowRefProvider = { pid in
-            pid == admittedPid ? focusedAXRef : nil
-        }
-        controller.axEventHandler.windowFactsProvider = { axRef, _ in
-            guard axRef.windowId == admittedWindowId else {
-                return makeAXEventWindowRuleFacts()
-            }
-            return makeAXEventWindowRuleFacts(
-                bundleId: "com.example.activation-admission-no-window-info",
-                title: "Focused untracked window without WindowServer info"
-            )
-        }
-        controller.axEventHandler.isFullscreenProvider = { _ in false }
-        defer {
-            controller.axEventHandler.resetDebugStateForTests()
-            controller.layoutRefreshController.resetDebugState()
-        }
-
-        controller.axEventHandler.handleAppActivation(
-            pid: admittedPid,
-            source: .workspaceDidActivateApplication
-        )
-        await controller.layoutRefreshController.waitForRefreshWorkForTests()
-
-        let trace = createFocusTraceEvents(on: controller)
-        #expect(controller.workspaceManager.entry(for: admittedToken)?.workspaceId == workspaceId)
-        #expect(controller.workspaceManager.confirmedManagedFocusToken == admittedToken)
-        #expect(controller.workspaceManager.isNonManagedFocusActive == false)
-        #expect(subscribedWindows.contains(UInt32(admittedWindowId)))
-        #expect(relayoutReasons.contains(.axWindowCreated))
-        #expect(trace.contains { event in
-            if case let .candidateTracked(token, tracedWorkspaceId) = event.kind {
-                return token == admittedToken && tracedWorkspaceId == workspaceId
-            }
-            return false
-        })
-        #expect(!trace.contains { event in
-            if case let .nonManagedFallbackEntered(pid, source) = event.kind {
-                return pid == admittedPid && source == .workspaceDidActivateApplication
             }
             return false
         })

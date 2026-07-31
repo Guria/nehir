@@ -44,6 +44,10 @@ struct RuntimeDecisionTraceField {
 @MainActor
 final class RuntimeDiagnosticsCoordinator {
     private static let logger = Logger(subsystem: "com.nehir", category: "runtime-debug")
+    private static let runtimeTraceRecordLimit = 400
+    // A pointer frame can emit both raw-window and gesture-admission diagnostics.
+    // At 120 Hz, 30,000 records retain just over two minutes of worst-case input.
+    private static let runtimeMouseTraceRecordLimit = 30_000
 
     private struct RuntimeTraceCaptureSession {
         let startedAt: Date
@@ -58,10 +62,15 @@ final class RuntimeDiagnosticsCoordinator {
 
     private var runtimeTraceCaptureSession: RuntimeTraceCaptureSession?
     private var runtimeViewportTraceRecords: [String] = []
+    private var runtimeViewportTraceDroppedCount = 0
     private var runtimeResizeTraceRecords: [String] = []
+    private var runtimeResizeTraceDroppedCount = 0
     private var runtimeInsertionTraceRecords: [String] = []
+    private var runtimeInsertionTraceDroppedCount = 0
     private var runtimeMouseTraceRecords: [String] = []
+    private var runtimeMouseTraceDroppedCount = 0
     private var runtimeDecisionTraceRecords: [String] = []
+    private var runtimeDecisionTraceDroppedCount = 0
     private var backgroundTraceBuffer = BackgroundTraceBuffer()
     private var backgroundTraceDrafts: [BackgroundTraceDraft.ID: BackgroundTraceDraft] = [:]
     private var backgroundTraceDraftOrder: [BackgroundTraceDraft.ID] = []
@@ -274,19 +283,35 @@ final class RuntimeDiagnosticsCoordinator {
     }
 
     func recordRuntimeResizeTrace(_ message: String) {
-        recordRuntimeTrace(into: \.runtimeResizeTraceRecords, category: .resize, message: message)
+        recordRuntimeTrace(
+            into: \.runtimeResizeTraceRecords,
+            droppedCount: \.runtimeResizeTraceDroppedCount,
+            category: .resize,
+            message: message
+        )
     }
 
     func recordRuntimeMouseTrace(_ message: String) {
-        recordRuntimeTrace(into: \.runtimeMouseTraceRecords, category: .mouse, message: message)
+        recordRuntimeTrace(
+            into: \.runtimeMouseTraceRecords,
+            droppedCount: \.runtimeMouseTraceDroppedCount,
+            category: .mouse,
+            message: message
+        )
     }
 
     func recordRuntimeInsertionTrace(_ message: String) {
-        recordRuntimeTrace(into: \.runtimeInsertionTraceRecords, category: .insertion, message: message)
+        recordRuntimeTrace(
+            into: \.runtimeInsertionTraceRecords,
+            droppedCount: \.runtimeInsertionTraceDroppedCount,
+            category: .insertion,
+            message: message
+        )
     }
 
     private func recordRuntimeTrace(
         into recordsKeyPath: ReferenceWritableKeyPath<RuntimeDiagnosticsCoordinator, [String]>,
+        droppedCount droppedCountKeyPath: ReferenceWritableKeyPath<RuntimeDiagnosticsCoordinator, Int>,
         category: BackgroundTraceCategory,
         message: String
     ) {
@@ -294,8 +319,13 @@ final class RuntimeDiagnosticsCoordinator {
         let line = timestamp.ISO8601Format() + " " + message
         if runtimeTraceCaptureSession != nil {
             self[keyPath: recordsKeyPath].append(line)
-            if self[keyPath: recordsKeyPath].count > 400 {
-                self[keyPath: recordsKeyPath].removeFirst(self[keyPath: recordsKeyPath].count - 400)
+            let recordLimit = category == .mouse
+                ? Self.runtimeMouseTraceRecordLimit
+                : Self.runtimeTraceRecordLimit
+            let overflow = self[keyPath: recordsKeyPath].count - recordLimit
+            if overflow > 0 {
+                self[keyPath: recordsKeyPath].removeFirst(overflow)
+                self[keyPath: droppedCountKeyPath] += overflow
             }
         }
         appendBackgroundTrace(category: category, text: line, timestamp: timestamp)
@@ -312,7 +342,12 @@ final class RuntimeDiagnosticsCoordinator {
             "cluster=\(cluster)"
         ] + fields().map(\.formatted))
             .joined(separator: " ")
-        recordRuntimeTrace(into: \.runtimeDecisionTraceRecords, category: .runtime, message: message)
+        recordRuntimeTrace(
+            into: \.runtimeDecisionTraceRecords,
+            droppedCount: \.runtimeDecisionTraceDroppedCount,
+            category: .runtime,
+            message: message
+        )
     }
 
     func recordRuntimeViewportTrace(
@@ -401,8 +436,10 @@ final class RuntimeDiagnosticsCoordinator {
 
         if runtimeTraceCaptureSession != nil {
             runtimeViewportTraceRecords.append(line)
-            if runtimeViewportTraceRecords.count > 400 {
-                runtimeViewportTraceRecords.removeFirst(runtimeViewportTraceRecords.count - 400)
+            let overflow = runtimeViewportTraceRecords.count - Self.runtimeTraceRecordLimit
+            if overflow > 0 {
+                runtimeViewportTraceRecords.removeFirst(overflow)
+                runtimeViewportTraceDroppedCount += overflow
             }
         }
         appendBackgroundTrace(category: .viewport, text: line, timestamp: timestamp)
@@ -1038,6 +1075,19 @@ final class RuntimeDiagnosticsCoordinator {
         }
     }
 
+    private func resetRuntimeTraceCaptureRecords() {
+        runtimeViewportTraceRecords.removeAll(keepingCapacity: true)
+        runtimeViewportTraceDroppedCount = 0
+        runtimeResizeTraceRecords.removeAll(keepingCapacity: true)
+        runtimeResizeTraceDroppedCount = 0
+        runtimeInsertionTraceRecords.removeAll(keepingCapacity: true)
+        runtimeInsertionTraceDroppedCount = 0
+        runtimeMouseTraceRecords.removeAll(keepingCapacity: true)
+        runtimeMouseTraceDroppedCount = 0
+        runtimeDecisionTraceRecords.removeAll(keepingCapacity: true)
+        runtimeDecisionTraceDroppedCount = 0
+    }
+
     @discardableResult
     private func startRuntimeTraceCapture() -> ExternalCommandResult {
         guard runtimeTraceCaptureSession == nil else {
@@ -1046,11 +1096,8 @@ final class RuntimeDiagnosticsCoordinator {
         }
         guard let controller else { return .internalError }
 
-        runtimeViewportTraceRecords.removeAll(keepingCapacity: true)
-        runtimeResizeTraceRecords.removeAll(keepingCapacity: true)
-        runtimeInsertionTraceRecords.removeAll(keepingCapacity: true)
-        runtimeMouseTraceRecords.removeAll(keepingCapacity: true)
-        runtimeDecisionTraceRecords.removeAll(keepingCapacity: true)
+        resetRuntimeTraceCaptureRecords()
+        controller.axEventHandler.resetRuntimeTraceBuffersForCapture()
         let startedAt = Date()
         let startRuntimeStateDump = runtimeStateDebugDump(
             traceLimit: 0,
@@ -1111,6 +1158,16 @@ final class RuntimeDiagnosticsCoordinator {
         let managedReplacementTraceDump = managedReplacementTraceEvents.isEmpty
             ? "managed replacement trace empty"
             : managedReplacementTraceEvents.map(\.description).joined(separator: "\n")
+        let axTraceRetention = controller.axEventHandler.traceRetentionSnapshot()
+        let traceRetentionDump = [
+            "niriViewport retained=\(runtimeViewportTraceRecords.count) dropped=\(runtimeViewportTraceDroppedCount) limit=\(Self.runtimeTraceRecordLimit)",
+            "niriResize retained=\(runtimeResizeTraceRecords.count) dropped=\(runtimeResizeTraceDroppedCount) limit=\(Self.runtimeTraceRecordLimit)",
+            "niriInsertion retained=\(runtimeInsertionTraceRecords.count) dropped=\(runtimeInsertionTraceDroppedCount) limit=\(Self.runtimeTraceRecordLimit)",
+            "runtimeDecision retained=\(runtimeDecisionTraceRecords.count) dropped=\(runtimeDecisionTraceDroppedCount) limit=\(Self.runtimeTraceRecordLimit)",
+            "mouseFocus retained=\(runtimeMouseTraceRecords.count) dropped=\(runtimeMouseTraceDroppedCount) limit=\(Self.runtimeMouseTraceRecordLimit)",
+            "createFocus retained=\(axTraceRetention.createFocusRetainedCount) dropped=\(axTraceRetention.createFocusDroppedCount) limit=\(axTraceRetention.createFocusLimit)",
+            "managedReplacement retained=\(axTraceRetention.managedReplacementRetainedCount) dropped=\(axTraceRetention.managedReplacementDroppedCount) limit=\(axTraceRetention.managedReplacementLimit)"
+        ].joined(separator: "\n")
         let rawAXNotificationDump = AppAXContext.rawAXNotificationTraceDump()
         let axWindowsQueryDump = AppAXContext.axWindowsQueryTraceDump()
         let interactionMonitorWriteDump = controller.workspaceManager.interactionMonitorWriteTraceDump()
@@ -1120,6 +1177,9 @@ final class RuntimeDiagnosticsCoordinator {
             "startedAt=\(session.startedAt.ISO8601Format())",
             "endedAt=\(endedAt.ISO8601Format())",
             String(format: "durationSeconds=%.3f", duration),
+            "",
+            "## Trace retention",
+            traceRetentionDump,
             "",
             "## Runtime state at start",
             session.startRuntimeStateDump,
@@ -1180,11 +1240,7 @@ final class RuntimeDiagnosticsCoordinator {
         }
 
         runtimeTraceCaptureSession = nil
-        runtimeViewportTraceRecords.removeAll(keepingCapacity: true)
-        runtimeResizeTraceRecords.removeAll(keepingCapacity: true)
-        runtimeInsertionTraceRecords.removeAll(keepingCapacity: true)
-        runtimeMouseTraceRecords.removeAll(keepingCapacity: true)
-        runtimeDecisionTraceRecords.removeAll(keepingCapacity: true)
+        resetRuntimeTraceCaptureRecords()
         syncNiriResizeTraceSink()
         syncViewportMutationAuditFlag()
         controller.workspaceBarManager.update()
