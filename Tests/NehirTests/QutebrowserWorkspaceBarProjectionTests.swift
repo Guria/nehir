@@ -16,6 +16,13 @@ struct QutebrowserWorkspaceBarProjectionTests {
     @Test func topLevelDialogAcceptsRawAndNormalizedUnparentedRepresentations() {
         #expect(isUserAddressableQutebrowserDialog(parentWindowId: 0))
         #expect(isUserAddressableQutebrowserDialog(parentWindowId: nil))
+        #expect(WindowRuleEngine.presentsAsUserAddressableAXWindowSurface(
+            bundleId: qutebrowserBundleId.uppercased(),
+            role: kAXWindowRole as String,
+            subrole: kAXDialogSubrole as String,
+            windowLevel: 0,
+            parentWindowId: nil
+        ))
     }
 
     @Test func dialogExceptionDoesNotApplyToChildrenOrOtherApps() {
