@@ -3,6 +3,7 @@
 //
 // SPDX-License-Identifier: GPL-2.0-only
 
+import AppKit
 import CoreGraphics
 import Foundation
 @testable import Nehir
@@ -64,6 +65,12 @@ struct WindowServerPointerOcclusionTests {
         ))
         #expect(!WMController.isClickThroughNotificationCenterBackdrop(
             bundleIdentifier: "com.apple.notificationcenterui",
+            layer: Int(CGWindowLevelForKey(.dockWindow)),
+            frame: screen,
+            screenFrames: [screen]
+        ))
+        #expect(!WMController.isClickThroughNotificationCenterBackdrop(
+            bundleIdentifier: "com.apple.notificationcenterui",
             layer: Int(CGWindowLevelForKey(.mainMenuWindow)),
             frame: screen,
             screenFrames: [screen]
@@ -80,6 +87,36 @@ struct WindowServerPointerOcclusionTests {
             layer: Int(CGWindowLevelForKey(.dockWindow)) + 1,
             frame: virtualScreen,
             screenFrames: [left, right]
+        ))
+    }
+
+    @Test func directPointerPathUsesInjectedOwnerBundleLookup() throws {
+        let screen = try #require(NSScreen.main?.frame)
+        let controller = makeLayoutPlanTestController()
+        let windowId = 81_003
+        let ownerPid: pid_t = 81_103
+        controller.unmanagedWindowServerWindowOwnerProvider = { candidateWindowId in
+            candidateWindowId == windowId
+                ? (pid: ownerPid, ownerName: "System Overlay")
+                : nil
+        }
+        controller.ownerBundleIdProvider = { candidatePid in
+            candidatePid == ownerPid ? "com.apple.notificationcenterui" : nil
+        }
+        controller.unmanagedOverlayWindowInfoProvider = {
+            [self.makeWindowInfo(
+                windowId: windowId,
+                pid: ownerPid,
+                appKitFrame: screen,
+                layer: Int(CGWindowLevelForKey(.dockWindow)) + 1,
+                ownerName: "System Overlay"
+            )]
+        }
+
+        #expect(!controller.unmanagedInteractiveWindowServerWindowCovers(
+            point: screen.center,
+            windowUnderPointer: windowId,
+            allowWindowServerSnapshotFallback: false
         ))
     }
 

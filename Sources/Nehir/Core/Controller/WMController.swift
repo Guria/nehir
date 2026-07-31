@@ -295,6 +295,11 @@ final class WMController {
         return (pid_t(info.pid), nil)
     }
 
+    @ObservationIgnored
+    var ownerBundleIdProvider: @MainActor (pid_t) -> String? = {
+        NSRunningApplication(processIdentifier: $0)?.bundleIdentifier
+    }
+
     /// Reports whether the process owning an overlay window is a registered,
     /// bundled application. This is a structural, timing-independent signal
     /// (unlike an `AXUIElementCopyAttributeNames` query, which can transiently
@@ -3300,7 +3305,7 @@ final class WMController {
         if Self.isSystemChromeOwner(ownerName: owner.ownerName, pid: owner.pid) {
             return false
         }
-        let bundleIdentifier = NSRunningApplication(processIdentifier: owner.pid)?.bundleIdentifier
+        let bundleIdentifier = ownerBundleIdProvider(owner.pid)
         guard bundleIdentifier == Self.notificationCenterBundleId else { return true }
         guard let info = unmanagedOverlayWindowInfoProvider().first(where: {
             ($0[kCGWindowNumber as String] as? NSNumber)?.intValue == windowId
@@ -3310,7 +3315,12 @@ final class WMController {
             return true
         }
         let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
-        return !Self.isClickThroughNotificationCenterBackdrop(frame: frame, layer: layer, pid: owner.pid)
+        return !Self.isClickThroughNotificationCenterBackdrop(
+            bundleIdentifier: bundleIdentifier,
+            layer: layer,
+            frame: frame,
+            screenFrames: NSScreen.screens.map(\.frame)
+        )
     }
 
     func unmanagedOverlayWindowServerWindowCovers(point: CGPoint) -> Bool {

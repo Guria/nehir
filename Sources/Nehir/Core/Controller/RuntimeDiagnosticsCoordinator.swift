@@ -286,6 +286,7 @@ final class RuntimeDiagnosticsCoordinator {
         recordRuntimeTrace(
             into: \.runtimeResizeTraceRecords,
             droppedCount: \.runtimeResizeTraceDroppedCount,
+            recordLimit: Self.runtimeTraceRecordLimit,
             category: .resize,
             message: message
         )
@@ -295,6 +296,7 @@ final class RuntimeDiagnosticsCoordinator {
         recordRuntimeTrace(
             into: \.runtimeMouseTraceRecords,
             droppedCount: \.runtimeMouseTraceDroppedCount,
+            recordLimit: Self.runtimeMouseTraceRecordLimit,
             category: .mouse,
             message: message
         )
@@ -304,6 +306,7 @@ final class RuntimeDiagnosticsCoordinator {
         recordRuntimeTrace(
             into: \.runtimeInsertionTraceRecords,
             droppedCount: \.runtimeInsertionTraceDroppedCount,
+            recordLimit: Self.runtimeTraceRecordLimit,
             category: .insertion,
             message: message
         )
@@ -312,23 +315,35 @@ final class RuntimeDiagnosticsCoordinator {
     private func recordRuntimeTrace(
         into recordsKeyPath: ReferenceWritableKeyPath<RuntimeDiagnosticsCoordinator, [String]>,
         droppedCount droppedCountKeyPath: ReferenceWritableKeyPath<RuntimeDiagnosticsCoordinator, Int>,
+        recordLimit: Int,
         category: BackgroundTraceCategory,
         message: String
     ) {
         let timestamp = Date()
         let line = timestamp.ISO8601Format() + " " + message
         if runtimeTraceCaptureSession != nil {
-            self[keyPath: recordsKeyPath].append(line)
-            let recordLimit = category == .mouse
-                ? Self.runtimeMouseTraceRecordLimit
-                : Self.runtimeTraceRecordLimit
-            let overflow = self[keyPath: recordsKeyPath].count - recordLimit
-            if overflow > 0 {
-                self[keyPath: recordsKeyPath].removeFirst(overflow)
-                self[keyPath: droppedCountKeyPath] += overflow
-            }
+            appendRuntimeTraceRecord(
+                line,
+                into: recordsKeyPath,
+                droppedCount: droppedCountKeyPath,
+                recordLimit: recordLimit
+            )
         }
         appendBackgroundTrace(category: category, text: line, timestamp: timestamp)
+    }
+
+    private func appendRuntimeTraceRecord(
+        _ line: String,
+        into recordsKeyPath: ReferenceWritableKeyPath<RuntimeDiagnosticsCoordinator, [String]>,
+        droppedCount droppedCountKeyPath: ReferenceWritableKeyPath<RuntimeDiagnosticsCoordinator, Int>,
+        recordLimit: Int
+    ) {
+        self[keyPath: recordsKeyPath].append(line)
+        let overflow = self[keyPath: recordsKeyPath].count - recordLimit
+        if overflow > 0 {
+            self[keyPath: recordsKeyPath].removeFirst(overflow)
+            self[keyPath: droppedCountKeyPath] += overflow
+        }
     }
 
     func recordRuntimeDecisionEvent(
@@ -345,6 +360,7 @@ final class RuntimeDiagnosticsCoordinator {
         recordRuntimeTrace(
             into: \.runtimeDecisionTraceRecords,
             droppedCount: \.runtimeDecisionTraceDroppedCount,
+            recordLimit: Self.runtimeTraceRecordLimit,
             category: .runtime,
             message: message
         )
@@ -435,12 +451,12 @@ final class RuntimeDiagnosticsCoordinator {
             .joined(separator: " ")
 
         if runtimeTraceCaptureSession != nil {
-            runtimeViewportTraceRecords.append(line)
-            let overflow = runtimeViewportTraceRecords.count - Self.runtimeTraceRecordLimit
-            if overflow > 0 {
-                runtimeViewportTraceRecords.removeFirst(overflow)
-                runtimeViewportTraceDroppedCount += overflow
-            }
+            appendRuntimeTraceRecord(
+                line,
+                into: \.runtimeViewportTraceRecords,
+                droppedCount: \.runtimeViewportTraceDroppedCount,
+                recordLimit: Self.runtimeTraceRecordLimit
+            )
         }
         appendBackgroundTrace(category: .viewport, text: line, timestamp: timestamp)
     }
@@ -868,11 +884,7 @@ final class RuntimeDiagnosticsCoordinator {
         guard let controller else { return }
         if runtimeTraceCaptureSession != nil {
             runtimeTraceCaptureSession = nil
-            runtimeViewportTraceRecords.removeAll(keepingCapacity: true)
-            runtimeResizeTraceRecords.removeAll(keepingCapacity: true)
-            runtimeInsertionTraceRecords.removeAll(keepingCapacity: true)
-            runtimeMouseTraceRecords.removeAll(keepingCapacity: true)
-            runtimeDecisionTraceRecords.removeAll(keepingCapacity: true)
+            resetRuntimeTraceCaptureRecords()
             backgroundTraceBuffer.clear()
             backgroundTraceDrafts.removeAll(keepingCapacity: true)
             backgroundTraceDraftOrder.removeAll(keepingCapacity: true)
