@@ -46,6 +46,14 @@ struct QuickTerminalCloseAnchorTests {
         let overlayWindowId: Int
         let targetEntry: WindowModel.Entry
         let overlayState: OverlayWindowState
+
+        @MainActor
+        func tearDown() {
+            controller.axEventHandler.windowInfoProviderIsAuthoritativeForTests = false
+            controller.axEventHandler.windowInfoProvider = nil
+            controller.axEventHandler.windowOrderedInProvider = nil
+            controller.axEventHandler.resetDebugStateForTests()
+        }
     }
 
     /// Records the windows Nehir fronted, in order. Window-level granularity
@@ -121,7 +129,7 @@ struct QuickTerminalCloseAnchorTests {
         controller.axEventHandler.armOverlayCapabilityIfNeeded(
             source: .builtInRule("ghosttyQuickTerminalOverlay"),
             token: WindowToken(pid: overlayPid, windowId: overlayWindowId),
-            facts: quickTerminalFacts(pid: overlayPid, windowId: overlayWindowId)
+            facts: makeQuickTerminalFactsForTests(pid: overlayPid, windowId: overlayWindowId)
         )
 
         return Fixture(
@@ -133,34 +141,6 @@ struct QuickTerminalCloseAnchorTests {
             siblingToken: siblingToken,
             neighborToken: neighborToken,
             fronted: fronted
-        )
-    }
-
-    private func quickTerminalFacts(pid: pid_t, windowId: Int) -> WindowRuleFacts {
-        var windowServer = WindowServerInfo(
-            id: UInt32(windowId),
-            pid: pid,
-            level: 3,
-            frame: CGRect(x: 0, y: 40, width: 1_920, height: 1_000)
-        )
-        windowServer.tags = 0x2
-        return WindowRuleFacts(
-            appName: "Ghostty",
-            ax: AXWindowFacts(
-                role: kAXWindowRole as String,
-                subrole: kAXFloatingWindowSubrole as String,
-                title: "Terminal",
-                hasCloseButton: true,
-                hasFullscreenButton: false,
-                fullscreenButtonEnabled: nil,
-                hasZoomButton: true,
-                hasMinimizeButton: true,
-                appPolicy: .regular,
-                bundleId: "com.mitchellh.ghostty",
-                attributeFetchSucceeded: true
-            ),
-            sizeConstraints: nil,
-            windowServer: windowServer
         )
     }
 
@@ -199,7 +179,7 @@ struct QuickTerminalCloseAnchorTests {
             onMonitor: monitorId
         ))
 
-        let facts = quickTerminalFacts(pid: overlayPid, windowId: overlayWindowId)
+        let facts = makeQuickTerminalFactsForTests(pid: overlayPid, windowId: overlayWindowId)
         controller.axEventHandler.armOverlayCapabilityIfNeeded(
             source: .builtInRule("ghosttyQuickTerminalOverlay"),
             token: WindowToken(pid: overlayPid, windowId: overlayWindowId),
@@ -317,6 +297,7 @@ struct QuickTerminalCloseAnchorTests {
 
     @Test func automaticCrossAppRestoreIsSuppressedWhileOverlayIsStillOrderedIn() {
         guard let fx = makeCrossAppFixture() else { return }
+        defer { fx.tearDown() }
 
         fx.controller.axEventHandler.handleManagedAppActivation(
             entry: fx.targetEntry,
@@ -337,6 +318,7 @@ struct QuickTerminalCloseAnchorTests {
 
     @Test func crossAppActivationFollowsParkedWindowImmediatelyAfterOverlayDestroy() {
         guard let fx = makeCrossAppFixture() else { return }
+        defer { fx.tearDown() }
 
         fx.overlayState.isOrderedIn = false
         fx.overlayState.isPresent = false

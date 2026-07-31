@@ -616,6 +616,7 @@ final class AXEventHandler: CGSEventDelegate {
         let recentSameAppWindowCloseByPidCount: Int
         let recentNonManagedFocusByPidCount: Int
         let overlayCapablePidCount: Int
+        let recognizedOverlayWindowIdCount: Int
         let focusedWindowLossClosePrecursorByPidCount: Int
         let sameAppRecoveryRedirectLatchCount: Int
         let recentParkedFocusFollowByTokenCount: Int
@@ -1121,6 +1122,7 @@ final class AXEventHandler: CGSEventDelegate {
     private static let untrackedActivationRetryDelay: Duration = .milliseconds(300)
     private static let postCreateLifecycleVerificationDelay: Duration = .milliseconds(75)
     private static let createdWindowRetryLimit = 5
+    private static let destroyLivenessSuppressedKeepRetryLimit = createdWindowRetryLimit
     private static let createPlacementContextTTL: TimeInterval = 15
     private static let recentManagedAdmissionTTL: TimeInterval = 15
     // A deliberate user app switch (Dock/Cmd-Tab/launcher) and the target
@@ -1298,6 +1300,7 @@ final class AXEventHandler: CGSEventDelegate {
     private var pendingWindowStabilizationTasks: [WindowToken: Task<Void, Never>] = [:]
     private var pendingPostCreateLifecycleVerificationTasks: [WindowToken: Task<Void, Never>] = [:]
     private var pendingDestroyLivenessVerificationTasks: [WindowToken: Task<Void, Never>] = [:]
+    private var destroyLivenessSuppressedKeepCountByToken: [WindowToken: Int] = [:]
     private var pendingCreatedWindowRetryTasks: [UInt32: Task<Void, Never>] = [:]
     private var createdWindowRetryCountById: [UInt32: Int] = [:]
     private var createdWindowRetryPidById: [UInt32: pid_t] = [:]
@@ -1329,6 +1332,9 @@ final class AXEventHandler: CGSEventDelegate {
     /// Production queries SkyLight; tests supply windows while exercising the
     /// same overlay recognition and lifecycle path.
     var visibleWindowInfoProvider: (() -> [WindowServerInfo])?
+    /// OS-boundary seam for the process AppKit currently reports as frontmost.
+    /// Tests inject this observation while exercising overlay-close anchor adoption.
+    var frontmostApplicationPidProvider: (() -> pid_t?)?
     var spaceDisplayResolver: ((UInt64, [Monitor]) -> CGDirectDisplayID?)?
     /// OS-boundary seam for the display the pointer is currently over. `nil` uses the
     /// live AppKit pointer; tests set it (e.g. to `{ nil }`) so the real cursor position
@@ -1356,6 +1362,7 @@ final class AXEventHandler: CGSEventDelegate {
             recentSameAppWindowCloseByPidCount: recentSameAppWindowCloseByPid.count,
             recentNonManagedFocusByPidCount: recentNonManagedFocusByPid.count,
             overlayCapablePidCount: overlayCapablePids.count,
+            recognizedOverlayWindowIdCount: recognizedOverlayWindowIdsByPid.values.reduce(0) { $0 + $1.count },
             focusedWindowLossClosePrecursorByPidCount: focusedWindowLossClosePrecursorByPid.count,
             sameAppRecoveryRedirectLatchCount: sameAppRecoveryRedirectLatches.count,
             recentParkedFocusFollowByTokenCount: recentParkedFocusFollowByToken.count,
@@ -2522,9 +2529,13 @@ final class AXEventHandler: CGSEventDelegate {
     private func scheduleDestroyLivenessVerification(
         for token: WindowToken,
         origin: WindowDestroyOrigin = .axDestroyed,
-        confirmAXWhenWindowServerMissing: Bool = false
+        confirmAXWhenWindowServerMissing: Bool = false,
+        continuingSuppressedKeep: Bool = false
     ) {
         pendingDestroyLivenessVerificationTasks[token]?.cancel()
+        if !continuingSuppressedKeep {
+            destroyLivenessSuppressedKeepCountByToken[token] = 0
+        }
         let task = Task { @MainActor [weak self] in
             // A suppressed keep hands the token to a freshly scheduled
             // verification, which owns the dictionary slot from that point on.
@@ -2532,6 +2543,7 @@ final class AXEventHandler: CGSEventDelegate {
             defer {
                 if !rescheduledFollowUp {
                     self?.pendingDestroyLivenessVerificationTasks[token] = nil
+                    self?.destroyLivenessSuppressedKeepCountByToken[token] = nil
                 }
             }
             try? await Task.sleep(for: Self.postCreateLifecycleVerificationDelay)
@@ -2601,6 +2613,18 @@ final class AXEventHandler: CGSEventDelegate {
                 AXWindowService.invalidateCachedTitle(windowId: windowId)
                 self.finishVerifiedDestroyRemoval(token: token, windowId: windowId)
             } else {
+                let suppressedKeepCount = if keepReason != nil {
+                    (self.destroyLivenessSuppressedKeepCountByToken[token] ?? 0) + 1
+                } else {
+                    0
+                }
+                let retryLimitReached = suppressedKeepCount >= Self.destroyLivenessSuppressedKeepRetryLimit
+                let keepReasonDescription = if let keepReason, retryLimitReached {
+                    "\(keepReason)_retry_limit_reached"
+                } else {
+                    keepReason
+                        ?? (axEnumerationContainsToken ? "ax_contains_token" : "window_server_alive")
+                }
                 self.recordDestroyLivenessVerification(
                     DestroyLivenessVerificationTrace(
                         token: token,
@@ -2608,16 +2632,17 @@ final class AXEventHandler: CGSEventDelegate {
                         windowServerAlive: windowServerAlive,
                         axEnumeration: axEnumerationDescription,
                         outcome: "keep",
-                        reason: keepReason
-                            ?? (axEnumerationContainsToken ? "ax_contains_token" : "window_server_alive")
+                        reason: keepReasonDescription
                     )
                 )
-                if keepReason != nil {
+                if keepReason != nil, !retryLimitReached {
+                    self.destroyLivenessSuppressedKeepCountByToken[token] = suppressedKeepCount
                     rescheduledFollowUp = true
                     self.scheduleDestroyLivenessVerification(
                         for: token,
                         origin: origin,
-                        confirmAXWhenWindowServerMissing: confirmAXWhenWindowServerMissing
+                        confirmAXWhenWindowServerMissing: confirmAXWhenWindowServerMissing,
+                        continuingSuppressedKeep: true
                     )
                 }
             }
@@ -2656,6 +2681,7 @@ final class AXEventHandler: CGSEventDelegate {
     private func cancelDestroyLivenessVerification(for token: WindowToken) {
         pendingDestroyLivenessVerificationTasks[token]?.cancel()
         pendingDestroyLivenessVerificationTasks[token] = nil
+        destroyLivenessSuppressedKeepCountByToken[token] = nil
     }
 
     private func resetLifecycleVerificationState() {
@@ -2667,6 +2693,7 @@ final class AXEventHandler: CGSEventDelegate {
             task.cancel()
         }
         pendingDestroyLivenessVerificationTasks.removeAll()
+        destroyLivenessSuppressedKeepCountByToken.removeAll()
     }
 
     private func scheduleFloatingCreateFrameApplication(
@@ -3298,17 +3325,47 @@ final class AXEventHandler: CGSEventDelegate {
         return observedFrame(for: selectedEntry) == nil
     }
 
-    private struct SameAppOverlayRecoverySignal {
+    private final class SameAppOverlayRecoverySignal {
         let recentNonManaged: Bool
-        var overlayVisible: Bool
         let lifecycleActive: Bool
+        private let overlayVisibilityProvider: () -> Bool
+        private var cachedOverlayVisible: Bool?
+
+        init(
+            recentNonManaged: Bool,
+            lifecycleActive: Bool,
+            overlayVisibilityProvider: @escaping () -> Bool
+        ) {
+            self.recentNonManaged = recentNonManaged
+            self.lifecycleActive = lifecycleActive
+            self.overlayVisibilityProvider = overlayVisibilityProvider
+        }
+
+        var hasOverlayEvidence: Bool {
+            lifecycleActive || overlayVisible
+        }
+
+        var overlayVisibilityTraceValue: String {
+            cachedOverlayVisible.map(String.init) ?? "not_checked"
+        }
+
+        private var overlayVisible: Bool {
+            if let cachedOverlayVisible {
+                return cachedOverlayVisible
+            }
+            let overlayVisible = overlayVisibilityProvider()
+            cachedOverlayVisible = overlayVisible
+            return overlayVisible
+        }
     }
 
     private func hasSameAppOverlayRecoverySignal(for entry: WindowModel.Entry) -> SameAppOverlayRecoverySignal {
         .init(
             recentNonManaged: hasRecentNonManagedFocus(for: entry.pid),
-            overlayVisible: hasVisibleSamePidOverlayWindow(for: entry),
-            lifecycleActive: overlayWindowLifecycleActive(for: entry.pid)
+            lifecycleActive: overlayWindowLifecycleActive(for: entry.pid),
+            overlayVisibilityProvider: { [weak self] in
+                self?.hasVisibleSamePidOverlayWindow(for: entry) ?? false
+            }
         )
     }
 
@@ -3324,14 +3381,16 @@ final class AXEventHandler: CGSEventDelegate {
         entry: WindowModel.Entry,
         wsId: WorkspaceDescriptor.ID,
         selectedSameAppFocusDisappearedBeforeConfirm: Bool,
-        overlaySignal: SameAppOverlayRecoverySignal
+        overlaySignal: SameAppOverlayRecoverySignal,
+        includeVisibleOverlay: Bool
     ) -> SameAppCloseRecoveryViewportPins {
         let closeRecoveryPin = activeWindowCloseFocusRecoveryContext()?.workspaceId == wsId
         let outsideActiveCloseRecovery = activeWindowCloseFocusRecoveryWorkspaceId() == nil
         let recentSameAppClosePin = outsideActiveCloseRecovery
             && hasRecentSameAppWindowClose(for: entry.pid)
         let overlayRecoveryPin = outsideActiveCloseRecovery
-            && (overlaySignal.lifecycleActive || overlaySignal.overlayVisible)
+            && (overlaySignal.lifecycleActive
+                || (includeVisibleOverlay && overlaySignal.hasOverlayEvidence))
         let selectedSameAppFocusDisappearedPin = outsideActiveCloseRecovery
             && isWithinSameAppCloseRecoveryWindow(pid: entry.pid)
             && (selectedSameAppFocusDisappearedBeforeConfirm
@@ -3533,8 +3592,7 @@ final class AXEventHandler: CGSEventDelegate {
         else { return false }
         let signal = hasSameAppOverlayRecoverySignal(for: observedEntry)
         let hasCloseRecoveryEvidence = hasRecentSameAppWindowClose(for: observedEntry.pid)
-            || signal.lifecycleActive
-            || signal.overlayVisible
+            || signal.hasOverlayEvidence
         guard hasCloseRecoveryEvidence else { return false }
         guard case .unrelatedNoRequest = requestDisposition,
               let previousToken = controller?.workspaceManager.confirmedManagedFocusToken,
@@ -3552,7 +3610,7 @@ final class AXEventHandler: CGSEventDelegate {
                 "previousToken=\(previousToken)",
                 "requestDisposition=\(requestDisposition)",
                 "recentNonManaged=\(signal.recentNonManaged)",
-                "overlayVisible=\(signal.overlayVisible)",
+                "overlayVisible=\(signal.overlayVisibilityTraceValue)",
                 "overlayLifecycleActive=\(signal.lifecycleActive)"
             ]
         )
@@ -3663,7 +3721,7 @@ final class AXEventHandler: CGSEventDelegate {
             for: observedEntry,
             workspaceId: workspaceId
         )
-        let hasOverlayRecoveryEvidence = signal.lifecycleActive || signal.overlayVisible
+        let hasOverlayRecoveryEvidence = signal.hasOverlayEvidence
         let shouldRedirect = switch phase {
         case .preconfirm:
             hasOverlayRecoveryEvidence
@@ -3692,7 +3750,7 @@ final class AXEventHandler: CGSEventDelegate {
                 "recentSameAppClose=\(recentSameAppClose)",
                 "recentSameAppCloseAgeMs=\(recentSameAppCloseAgeMs(for: observedEntry.pid))",
                 "recentNonManaged=\(signal.recentNonManaged)",
-                "overlayVisible=\(signal.overlayVisible)",
+                "overlayVisible=\(signal.overlayVisibilityTraceValue)",
                 "overlayLifecycleActive=\(signal.lifecycleActive)",
                 "previousSameAppFocusDisappeared=\(previousSameAppFocusDisappeared)",
                 "selectedSameAppFocusDisappeared=\(selectedSameAppFocusDisappeared)"
@@ -3721,7 +3779,7 @@ final class AXEventHandler: CGSEventDelegate {
                     "latchedTargetToken=\(reverseLatch.targetToken)",
                     "recentSameAppClose=\(recentSameAppClose)",
                     "recentNonManaged=\(signal.recentNonManaged)",
-                    "overlayVisible=\(signal.overlayVisible)",
+                    "overlayVisible=\(signal.overlayVisibilityTraceValue)",
                     "overlayLifecycleActive=\(signal.lifecycleActive)",
                     "previousSameAppFocusDisappeared=\(previousSameAppFocusDisappeared)",
                     "selectedSameAppFocusDisappeared=\(selectedSameAppFocusDisappeared)"
@@ -3820,6 +3878,12 @@ final class AXEventHandler: CGSEventDelegate {
         source: ActivationEventSource
     ) {
         guard let controller else { return }
+        let hasRecognizedOverlay = recognizedOverlayWindowIdsByPid[pid]?.isEmpty == false
+        let shouldSample = !hasRecognizedOverlay
+            || source != .focusedWindowChanged
+            || controller.diagnostics.shouldRecordRuntimeDecisionEvents
+        guard shouldSample else { return }
+
         let visibleOverlay = hasVisibleOverlayWindow(for: pid)
         let phase = overlayLifecyclePhase(for: pid)
         guard let workspaceId = controller.workspaceManager.confirmedManagedFocusToken
@@ -3965,7 +4029,7 @@ final class AXEventHandler: CGSEventDelegate {
             "recentNonManagedFocusAgeMs=\(recentNonManagedFocusAgeMs(for: observedEntry.pid))",
             "overlayCapablePid=\(overlayCapablePids.contains(observedEntry.pid))",
             "nonManagedFocusActive=\(controller?.workspaceManager.isNonManagedFocusActive ?? false)",
-            "overlayVisible=\(overlaySignal.map { String($0.overlayVisible) } ?? "not_checked")",
+            "overlayVisible=\(overlaySignal?.overlayVisibilityTraceValue ?? "not_checked")",
             "overlayLifecycleActive=\(overlaySignal.map { String($0.lifecycleActive) } ?? "not_checked")",
             "sameAppCloseOrOverlayEvidence=\(sameAppCloseOrOverlayEvidence.map { String($0) } ?? "not_checked")",
             "currentTarget=\(currentTarget.map { String(describing: $0.token) } ?? "nil")",
@@ -4415,8 +4479,7 @@ final class AXEventHandler: CGSEventDelegate {
         // precise signal is the recognized overlay's lifecycle — panel ordered
         // in recently or its destroy just observed.
         let hasCloseOrOverlayEvidence = recentSameAppClose
-            || overlayWindowLifecycleActive(for: observedEntry.pid)
-            || overlaySignal.overlayVisible
+            || overlaySignal.hasOverlayEvidence
         guard hasCloseOrOverlayEvidence else {
             recordCloseRecoveryActivationGate(
                 entry: observedEntry,
@@ -4550,9 +4613,9 @@ final class AXEventHandler: CGSEventDelegate {
         )
         // A reusable overlay can be hidden when Nehir starts, so it may never
         // produce a create/admission event that marks its pid as overlay-capable.
-        // Sample visible same-pid windows before handling every activation; this
-        // discovers the panel while it is ordered in and stamps the lifecycle
-        // before its owner can restore another app during hide.
+        // Sample until one is recognized, on app-level activation that can precede
+        // restoration, and while diagnostics are recording. Ordinary focused-window
+        // churn for a known overlay then avoids a full WindowServer scan.
         sampleVisibleSamePidOverlayLifecycle(for: pid, source: source)
         // A genuine app-level switch (Dock, Cmd-Tab, launcher activate()) is a
         // user-intent signal that should still admit the app's window even while
@@ -5514,27 +5577,24 @@ final class AXEventHandler: CGSEventDelegate {
             let settleTolerance = 1.0 / max(engine.displayScale(in: wsId), 1.0)
             let isSpringInFlight = state.viewOffsetPixels.isAnimating
                 && abs(state.viewOffsetPixels.current() - state.viewOffsetPixels.target()) > settleTolerance
-            var overlaySignal = SameAppOverlayRecoverySignal(
-                recentNonManaged: hasRecentNonManagedFocus(for: entry.pid),
-                overlayVisible: false,
-                lifecycleActive: overlayWindowLifecycleActive(for: entry.pid)
-            )
+            let overlaySignal = hasSameAppOverlayRecoverySignal(for: entry)
             var closeRecoveryPins = sameAppCloseRecoveryViewportPins(
                 entry: entry,
                 wsId: wsId,
                 selectedSameAppFocusDisappearedBeforeConfirm: selectedSameAppFocusDisappearedBeforeConfirm,
-                overlaySignal: overlaySignal
+                overlaySignal: overlaySignal,
+                includeVisibleOverlay: false
             )
             if !closeRecoveryPins.shouldPin,
                activeWindowCloseFocusRecoveryWorkspaceId() == nil,
                isWithinSameAppCloseRecoveryWindow(pid: entry.pid)
             {
-                overlaySignal.overlayVisible = hasVisibleSamePidOverlayWindow(for: entry)
                 closeRecoveryPins = sameAppCloseRecoveryViewportPins(
                     entry: entry,
                     wsId: wsId,
                     selectedSameAppFocusDisappearedBeforeConfirm: selectedSameAppFocusDisappearedBeforeConfirm,
-                    overlaySignal: overlaySignal
+                    overlaySignal: overlaySignal,
+                    includeVisibleOverlay: true
                 )
             }
             let closeRecoveryPin = closeRecoveryPins.closeRecoveryPin
@@ -5579,7 +5639,7 @@ final class AXEventHandler: CGSEventDelegate {
                     "overlayRecoveryPin=\(overlayRecoveryPin)",
                     "selectedSameAppFocusDisappearedPin=\(selectedSameAppFocusDisappearedPin)",
                     "recentNonManaged=\(overlaySignal.recentNonManaged)",
-                    "overlayVisible=\(overlaySignal.overlayVisible)",
+                    "overlayVisible=\(overlaySignal.overlayVisibilityTraceValue)",
                     "overlayLifecycleActive=\(overlaySignal.lifecycleActive)",
                     "wasAlreadyConfirmedFocus=\(wasAlreadyConfirmedFocus)",
                     "isGesture=\(state.viewOffsetPixels.isGesture)",
@@ -6302,7 +6362,14 @@ final class AXEventHandler: CGSEventDelegate {
         // after which reevaluation demotes it and focus recovery dismisses it.
         // Wait for one coherent WindowServer record before making any managed
         // admission decision; the bounded create retry owns that stabilization.
-        guard hasStableWindowServerInfo(windowInfo, for: token) else {
+        // A missing record is different: some focused standard windows never
+        // acquire queryable WindowServer facts, so their matching focused AX ref
+        // remains the only stable identity available for admission.
+        let hasFocusedAXFallbackWithoutWindowServerInfo = windowInfo == nil
+            && fallbackAXRef?.windowId == Int(windowId)
+        guard hasStableWindowServerInfo(windowInfo, for: token)
+            || hasFocusedAXFallbackWithoutWindowServerInfo
+        else {
             recordPrepareCreateRejection(
                 windowId: windowId,
                 token: token,
@@ -8040,7 +8107,11 @@ final class AXEventHandler: CGSEventDelegate {
             anchorToken = confirmedToken
         }
 
-        let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let frontmostPid = if let frontmostApplicationPidProvider {
+            frontmostApplicationPidProvider()
+        } else {
+            NSWorkspace.shared.frontmostApplication?.processIdentifier
+        }
         let frontmostFocusedToken = frontmostPid.flatMap { focusedWindowToken(for: $0) }
         let canAdoptFocusedAnchor = frontmostPid == anchorToken.pid
             && frontmostFocusedToken == anchorToken
@@ -9728,6 +9799,7 @@ final class AXEventHandler: CGSEventDelegate {
         recentParkedFocusFollowByToken = recentParkedFocusFollowByToken.filter { $0.key.pid != pid }
         parkedFollowHoldByPid.removeValue(forKey: pid)
         recentManagedAdmissionByToken = recentManagedAdmissionByToken.filter { $0.key.pid != pid }
+        recognizedOverlayWindowIdsByPid.removeValue(forKey: pid)
         recentRecognizedOverlayDestroyByPid.removeValue(forKey: pid)
         lastOverlayOrderedInByPid.removeValue(forKey: pid)
         overlayCapablePids.remove(pid)

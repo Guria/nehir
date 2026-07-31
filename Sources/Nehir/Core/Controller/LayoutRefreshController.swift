@@ -546,7 +546,7 @@ import QuartzCore
         }
 
         if plan.effects.drainDeferredCreatedWindows {
-            await controller.axEventHandler.drainDeferredCreatedWindows()
+            controller.axEventHandler.drainDeferredCreatedWindows()
         }
 
         if plan.effects.subscribeManagedWindows {

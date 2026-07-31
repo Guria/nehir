@@ -65,6 +65,11 @@ struct SameAppCloseFocusSuccessionTests {
             )
         }
 
+        #expect(hasFocusDecision(
+            fixture.controller,
+            token: fixture.successorToken,
+            containing: "same_pid_close_succession_preconfirm"
+        ))
         #expect(fixture.controller.workspaceManager.confirmedManagedFocusToken == fixture.predecessorToken)
         #expect(fixture.controller.workspaceManager.activeFocusRequestToken == nil)
     }
@@ -257,5 +262,6 @@ struct SameAppCloseFocusSuccessionTests {
             if condition() { return }
             try? await Task.sleep(for: .milliseconds(1))
         }
+        Issue.record("Timed out waiting for same-app focus succession condition")
     }
 }

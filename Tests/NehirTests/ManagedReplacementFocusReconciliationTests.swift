@@ -91,6 +91,10 @@ private struct ReplacementFocusFixture {
             didReceive: .destroyed(windowId: UInt32(transientToken.windowId), spaceId: 0)
         )
         #expect(controller.workspaceManager.entry(for: transientToken) != nil)
+        #expect(
+            controller.axEventHandler.memoryDebugSnapshot()
+                .pendingCreatedWindowRetryTaskCount == 0
+        )
         controller.axEventHandler.flushPendingManagedReplacementEventsForTests()
         await waitForLayoutPlanRefreshWork(on: controller)
     }

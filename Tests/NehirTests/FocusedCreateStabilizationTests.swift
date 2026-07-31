@@ -9,6 +9,46 @@ import Foundation
 @testable import Nehir
 import Testing
 
+private struct PrepareCreateRejectionSnapshot {
+    let windowId: UInt32
+    let token: WindowToken?
+    let context: String
+    let reason: PrepareCreateCandidateRejectionReason
+    let parentWindowId: UInt32?
+    let hasFloatingTag: Bool?
+    let hasDocumentTag: Bool?
+    let frame: CGRect?
+
+    init?(_ event: NiriCreateFocusTraceEvent) {
+        guard case let .prepareCreateRejected(
+            windowId: windowId,
+            token: token,
+            context: context,
+            reason: reason,
+            hasWindowInfo: _,
+            windowInfoPid: _,
+            windowInfoLevel: _,
+            windowInfoParentId: parentWindowId,
+            windowInfoHasFloatingTag: hasFloatingTag,
+            windowInfoHasDocumentTag: hasDocumentTag,
+            windowInfoFrame: frame,
+            fallbackToken: _,
+            hasFallbackAXRef: _,
+            createContextSource: _
+        ) = event.kind else {
+            return nil
+        }
+        self.windowId = windowId
+        self.token = token
+        self.context = context
+        self.reason = reason
+        self.parentWindowId = parentWindowId
+        self.hasFloatingTag = hasFloatingTag
+        self.hasDocumentTag = hasDocumentTag
+        self.frame = frame
+    }
+}
+
 @MainActor
 struct FocusedCreateStabilizationTests {
     @Test func placeholderWindowServerRecordDefersAdmissionUntilParentedFactsAreCoherent() async {
@@ -111,32 +151,16 @@ struct FocusedCreateStabilizationTests {
         #expect(frontedTokens.isEmpty)
         #expect(subscriptions.isEmpty)
         #expect(relayoutReasons.isEmpty)
-        #expect(controller.axEventHandler.niriCreateFocusTraceSnapshotForTests().contains { event in
-            if case let .prepareCreateRejected(
-                windowId,
-                token,
-                context,
-                reason,
-                _,
-                _,
-                _,
-                parentId,
-                _,
-                _,
-                frame,
-                _,
-                _,
-                _
-            ) = event.kind {
-                return windowId == popupWindowId &&
-                    token == popupToken &&
-                    context == "focused_admission" &&
-                    reason == .unstableWindowServerInfo &&
-                    parentId == 0 &&
-                    frame == .zero
-            }
-            return false
-        })
+        #expect(controller.axEventHandler.niriCreateFocusTraceSnapshotForTests()
+            .compactMap(PrepareCreateRejectionSnapshot.init)
+            .contains { rejection in
+                rejection.windowId == popupWindowId &&
+                    rejection.token == popupToken &&
+                    rejection.context == "focused_admission" &&
+                    rejection.reason == .unstableWindowServerInfo &&
+                    rejection.parentWindowId == 0 &&
+                    rejection.frame == .zero
+            })
 
         windowInfo = WindowServerInfo(
             id: popupWindowId,
@@ -150,30 +174,13 @@ struct FocusedCreateStabilizationTests {
         for _ in 0 ..< 300 {
             let classifiedAsUnmanaged = controller.axEventHandler
                 .niriCreateFocusTraceSnapshotForTests()
-                .contains { event in
-                    if case let .prepareCreateRejected(
-                        windowId,
-                        token,
-                        _,
-                        reason,
-                        _,
-                        _,
-                        _,
-                        parentId,
-                        _,
-                        _,
-                        frame,
-                        _,
-                        _,
-                        _
-                    ) = event.kind {
-                        return windowId == popupWindowId &&
-                            token == popupToken &&
-                            reason == .untrackedDecision &&
-                            parentId == UInt32(parentWindowId) &&
-                            frame == windowInfo.frame
-                    }
-                    return false
+                .compactMap(PrepareCreateRejectionSnapshot.init)
+                .contains { rejection in
+                    rejection.windowId == popupWindowId &&
+                        rejection.token == popupToken &&
+                        rejection.reason == .untrackedDecision &&
+                        rejection.parentWindowId == UInt32(parentWindowId) &&
+                        rejection.frame == windowInfo.frame
                 }
             if classifiedAsUnmanaged { break }
             try? await Task.sleep(for: .milliseconds(1))
@@ -185,32 +192,78 @@ struct FocusedCreateStabilizationTests {
         #expect(frontedTokens.isEmpty)
         #expect(subscriptions.isEmpty)
         #expect(!relayoutReasons.contains(.axWindowCreated))
-        #expect(controller.axEventHandler.niriCreateFocusTraceSnapshotForTests().contains { event in
-            if case let .prepareCreateRejected(
-                windowId,
-                token,
-                _,
-                reason,
-                _,
-                _,
-                _,
-                parentId,
-                hasFloatingTag,
-                hasDocumentTag,
-                frame,
-                _,
-                _,
-                _
-            ) = event.kind {
-                return windowId == popupWindowId &&
-                    token == popupToken &&
-                    reason == .untrackedDecision &&
-                    parentId == UInt32(parentWindowId) &&
-                    hasFloatingTag == true &&
-                    hasDocumentTag == false &&
-                    frame == windowInfo.frame
-            }
-            return false
-        })
+        #expect(controller.axEventHandler.niriCreateFocusTraceSnapshotForTests()
+            .compactMap(PrepareCreateRejectionSnapshot.init)
+            .contains { rejection in
+                rejection.windowId == popupWindowId &&
+                    rejection.token == popupToken &&
+                    rejection.reason == .untrackedDecision &&
+                    rejection.parentWindowId == UInt32(parentWindowId) &&
+                    rejection.hasFloatingTag == true &&
+                    rejection.hasDocumentTag == false &&
+                    rejection.frame == windowInfo.frame
+            })
+    }
+
+    @Test func focusedStandardWindowCanBeAdmittedWithoutWindowServerFacts() {
+        let controller = makeLayoutPlanTestController()
+        guard let workspaceId = controller.interactionWorkspace()?.id else {
+            Issue.record("Missing focused-create fallback workspace")
+            return
+        }
+
+        let pid: pid_t = 91_702
+        let windowId = 9_172
+        let token = WindowToken(pid: pid, windowId: windowId)
+        let axRef = makeLayoutPlanTestWindow(windowId: windowId)
+        controller.hasStartedServices = true
+        controller.axEventHandler.windowInfoProviderIsAuthoritativeForTests = true
+        controller.axEventHandler.windowInfoProvider = { _ in nil }
+        controller.axEventHandler.focusedWindowRefProvider = { candidatePid in
+            candidatePid == pid ? axRef : nil
+        }
+        controller.axEventHandler.bundleIdProvider = { _ in "com.example.focused-standard-window" }
+        controller.axEventHandler.windowFactsProvider = { candidateRef, candidatePid in
+            guard candidateRef.windowId == windowId, candidatePid == pid else { return nil }
+            return WindowRuleFacts(
+                appName: "Focused Standard Window",
+                ax: AXWindowFacts(
+                    role: kAXWindowRole as String,
+                    subrole: kAXStandardWindowSubrole as String,
+                    title: "Document",
+                    hasCloseButton: true,
+                    hasFullscreenButton: true,
+                    fullscreenButtonEnabled: true,
+                    hasZoomButton: true,
+                    hasMinimizeButton: true,
+                    appPolicy: .regular,
+                    bundleId: "com.example.focused-standard-window",
+                    attributeFetchSucceeded: true
+                ),
+                sizeConstraints: nil,
+                windowServer: nil
+            )
+        }
+        controller.axEventHandler.isFullscreenProvider = { _ in false }
+        defer {
+            controller.axEventHandler.windowInfoProviderIsAuthoritativeForTests = false
+            controller.axEventHandler.windowInfoProvider = nil
+            controller.axEventHandler.focusedWindowRefProvider = nil
+            controller.axEventHandler.bundleIdProvider = nil
+            controller.axEventHandler.windowFactsProvider = nil
+            controller.axEventHandler.isFullscreenProvider = nil
+            controller.axEventHandler.resetDebugStateForTests()
+        }
+
+        controller.axEventHandler.handleAppActivation(pid: pid, source: .focusedWindowChanged)
+
+        #expect(controller.workspaceManager.entry(for: token)?.workspaceId == workspaceId)
+        #expect(controller.workspaceManager.confirmedManagedFocusToken == token)
+        #expect(!controller.workspaceManager.isNonManagedFocusActive)
+        #expect(!controller.axEventHandler.niriCreateFocusTraceSnapshotForTests()
+            .compactMap(PrepareCreateRejectionSnapshot.init)
+            .contains { rejection in
+                rejection.token == token && rejection.reason == .unstableWindowServerInfo
+            })
     }
 }
