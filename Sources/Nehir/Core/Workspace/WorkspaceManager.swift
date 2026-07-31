@@ -2754,11 +2754,11 @@ final class WorkspaceManager {
             return .accepted(reason: "manualOverride")
         }
 
-        if hasStickySource, !isStandardAXWindowSurface(metadata) {
+        if hasStickySource, !isUserAddressableAXWindowSurface(metadata) {
             return .accepted(reason: "stickySource")
         }
 
-        if !isStandardAXWindowSurface(metadata) {
+        if !isUserAddressableAXWindowSurface(metadata) {
             return .rejected(reason: "nonStandardAXSurface")
         }
 
@@ -2794,10 +2794,13 @@ final class WorkspaceManager {
             ?? entry.managedReplacementMetadata?.frame
     }
 
-    private func isStandardAXWindowSurface(_ metadata: ManagedReplacementMetadata?) -> Bool {
-        WindowRuleEngine.presentsAsStandardAXWindowSurface(
+    private func isUserAddressableAXWindowSurface(_ metadata: ManagedReplacementMetadata?) -> Bool {
+        WindowRuleEngine.presentsAsUserAddressableAXWindowSurface(
+            bundleId: metadata?.bundleId,
             role: metadata?.role,
-            subrole: metadata?.subrole
+            subrole: metadata?.subrole,
+            windowLevel: metadata?.windowLevel,
+            parentWindowId: metadata?.parentWindowId
         )
     }
 

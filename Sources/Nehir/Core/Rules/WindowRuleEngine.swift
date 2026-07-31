@@ -689,14 +689,26 @@ final class WindowRuleEngine {
         )
     }
 
-    /// The single shared definition of "presents as a standard, user-addressable
-    /// AX window": AX role is a window and the subrole is either absent or the
-    /// standard one. Admission (the parented-surface rule below) and the
-    /// workspace-bar projection consult this same predicate, so the two gates
-    /// cannot disagree about the same surface.
-    static func presentsAsStandardAXWindowSurface(role: String?, subrole: String?) -> Bool {
+    /// The shared definition of a user-addressable AX window surface. Most apps
+    /// expose one as `AXStandardWindow`; qutebrowser's frameless top-level browser
+    /// window is the known exception, exposed as an unparented level-zero
+    /// `AXDialog`. Admission and workspace-bar projection consult the same facts,
+    /// so a parented dialog cannot inherit the top-level exception.
+    static func presentsAsUserAddressableAXWindowSurface(
+        bundleId: String?,
+        role: String?,
+        subrole: String?,
+        windowLevel: Int32?,
+        parentWindowId: UInt32?
+    ) -> Bool {
         guard role == kAXWindowRole as String else { return false }
-        return subrole == nil || subrole == kAXStandardWindowSubrole as String
+        if subrole == nil || subrole == kAXStandardWindowSubrole as String {
+            return true
+        }
+        return bundleId == "org.qutebrowser.qutebrowser"
+            && subrole == kAXDialogSubrole as String
+            && windowLevel == 0
+            && (parentWindowId == nil || parentWindowId == 0)
     }
 
     private func parentedWindowServerSurfaceDecision(
@@ -719,7 +731,13 @@ final class WindowRuleEngine {
         // fetch keeps the managed-floating fallback below: "unknown" must not
         // be read as "non-standard" and silently unmanage a real child window.
         if facts.ax.attributeFetchSucceeded,
-           !Self.presentsAsStandardAXWindowSurface(role: facts.ax.role, subrole: facts.ax.subrole)
+           !Self.presentsAsUserAddressableAXWindowSurface(
+               bundleId: facts.ax.bundleId,
+               role: facts.ax.role,
+               subrole: facts.ax.subrole,
+               windowLevel: facts.windowServer?.level,
+               parentWindowId: facts.windowServer?.parentId
+           )
         {
             return WindowDecision(
                 disposition: .unmanaged,

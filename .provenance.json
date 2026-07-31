@@ -120,6 +120,7 @@
         "Tests/NehirTests/FocusedCreateStabilizationTests.swift",
         "Tests/NehirTests/ManagedReplacementFocusReconciliationTests.swift",
         "Tests/NehirTests/QuantizationRefusalStreakTests.swift",
+        "Tests/NehirTests/QutebrowserWorkspaceBarProjectionTests.swift",
         "Tests/NehirTests/QuickTerminalCloseAnchorTests.swift",
         "Tests/NehirTests/QuickTerminalPointerIntentTests.swift",
         "Tests/NehirTests/QuickTerminalStartupLifecycleTests.swift",
