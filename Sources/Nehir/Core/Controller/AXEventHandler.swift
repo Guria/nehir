@@ -109,6 +109,7 @@ enum PrepareCreateCandidateRejectionReason: String, Equatable {
     case tokenWindowIdMismatch = "token_window_id_mismatch"
     case existingEntry = "existing_entry"
     case ownedWindow = "owned_window"
+    case unstableWindowServerInfo = "unstable_window_server_info"
     case missingAXRef = "missing_ax_ref"
     case untrackedDecision = "untracked_decision"
 }
@@ -597,6 +598,15 @@ final class AXEventHandler: CGSEventDelegate {
         var scopedGeometryRelayoutRequests = 0
     }
 
+    struct TraceRetentionSnapshot {
+        let createFocusRetainedCount: Int
+        let createFocusDroppedCount: Int
+        let createFocusLimit: Int
+        let managedReplacementRetainedCount: Int
+        let managedReplacementDroppedCount: Int
+        let managedReplacementLimit: Int
+    }
+
     struct MemoryDebugSnapshot {
         let deferredCreatedWindowIdCount: Int
         let deferredCreatedWindowOrderCount: Int
@@ -711,6 +721,8 @@ final class AXEventHandler: CGSEventDelegate {
             case flushExtended(
                 policy: String,
                 reason: String,
+                blockerToken: WindowToken?,
+                blockerWorkspaceId: WorkspaceDescriptor.ID?,
                 extensionCount: Int,
                 createCount: Int,
                 destroyCount: Int
@@ -730,6 +742,33 @@ final class AXEventHandler: CGSEventDelegate {
                 verdict: String,
                 destroyWsAlive: Bool,
                 createWsAlive: Bool
+            )
+            case pairSelected(
+                policy: String,
+                destroySequence: UInt64,
+                createSequence: UInt64,
+                destroyToken: WindowToken,
+                createToken: WindowToken,
+                compatibleCreateTokens: [WindowToken],
+                destroyWsAlive: Bool,
+                createWsAlive: Bool,
+                destroyMetadataSummary: String,
+                createMetadataSummary: String
+            )
+            case pairCompleted(
+                policy: String,
+                destroyToken: WindowToken,
+                createToken: WindowToken,
+                rekeyed: Bool
+            )
+            case livenessAudit(
+                trigger: String,
+                phase: String,
+                trackedTokens: String,
+                enumeratedWindowIds: String,
+                scheduledTokens: String,
+                skippedTokens: String,
+                outcome: String
             )
         }
 
@@ -797,8 +836,16 @@ final class AXEventHandler: CGSEventDelegate {
                 return "replayManagedReplacementEvents.destroy \(prefix) token=\(token) windowId=\(windowId) monitor=\(String(describing: monitorId)) mode=\(mode) \(metadataSummary)"
             case let .matched(policy, elapsedMillis):
                 return "managedReplacement.matched \(prefix) policy=\(policy) elapsedMillis=\(elapsedMillis)"
-            case let .flushExtended(policy, reason, extensionCount, createCount, destroyCount):
-                return "managedReplacement.flushExtended \(prefix) policy=\(policy) reason=\(reason) extension=\(extensionCount) creates=\(createCount) destroys=\(destroyCount)"
+            case let .flushExtended(
+                policy,
+                reason,
+                blockerToken,
+                blockerWorkspaceId,
+                extensionCount,
+                createCount,
+                destroyCount
+            ):
+                return "managedReplacement.flushExtended \(prefix) policy=\(policy) reason=\(reason) blockerToken=\(blockerToken.map(String.init(describing:)) ?? "nil") blockerWorkspace=\(blockerWorkspaceId?.uuidString ?? "nil") extension=\(extensionCount) creates=\(createCount) destroys=\(destroyCount)"
             case let .matchDiagnostics(
                 policy,
                 destroyToken,
@@ -808,6 +855,31 @@ final class AXEventHandler: CGSEventDelegate {
                 createWsAlive
             ):
                 return "managedReplacement.matchDiagnostics \(prefix) policy=\(policy) destroy=\(destroyToken) create=\(createToken) verdict=\(verdict) destroyWsAlive=\(destroyWsAlive) createWsAlive=\(createWsAlive)"
+            case let .pairSelected(
+                policy,
+                destroySequence,
+                createSequence,
+                destroyToken,
+                createToken,
+                compatibleCreateTokens,
+                destroyWsAlive,
+                createWsAlive,
+                destroyMetadataSummary,
+                createMetadataSummary
+            ):
+                return "managedReplacement.pairSelected \(prefix) policy=\(policy) destroySequence=\(destroySequence) createSequence=\(createSequence) destroy=\(destroyToken) create=\(createToken) compatibleCreates=\(compatibleCreateTokens.map(String.init(describing:)).joined(separator: ",")) destroyWsAlive=\(destroyWsAlive) createWsAlive=\(createWsAlive) destroyMetadata={\(destroyMetadataSummary)} createMetadata={\(createMetadataSummary)}"
+            case let .pairCompleted(policy, destroyToken, createToken, rekeyed):
+                return "managedReplacement.pairCompleted \(prefix) policy=\(policy) destroy=\(destroyToken) create=\(createToken) rekeyed=\(rekeyed)"
+            case let .livenessAudit(
+                trigger,
+                phase,
+                trackedTokens,
+                enumeratedWindowIds,
+                scheduledTokens,
+                skippedTokens,
+                outcome
+            ):
+                return "managedReplacement.livenessAudit \(prefix) trigger=\(trigger) phase=\(phase) tracked=\(trackedTokens) enumerated=\(enumeratedWindowIds) scheduled=\(scheduledTokens) skipped=\(skippedTokens) outcome=\(outcome)"
             }
         }
     }
@@ -894,6 +966,31 @@ final class AXEventHandler: CGSEventDelegate {
         let workspaceId: WorkspaceDescriptor.ID
     }
 
+    private struct ReplacementFocusTarget {
+        let token: WindowToken
+        let engine: NiriLayoutEngine
+        let node: NiriWindow
+        let columnIndex: Int
+        let monitor: Monitor
+        var state: ViewportState
+    }
+
+    private struct ReplacementFocusInputs {
+        let gap: CGFloat
+        let workingFrame: CGRect
+        let columns: [NiriContainer]
+        let rememberedFocusChanged: Bool
+    }
+
+    private struct ReplacementFocusResult {
+        let selectedNodeChanged: Bool
+        let activeColumnChanged: Bool
+        let targetViewStartBefore: CGFloat
+        let targetViewStartAfter: CGFloat
+        let didReveal: Bool
+        let layoutChanged: Bool
+    }
+
     private struct WindowCloseFocusRecoveryContext: Equatable {
         let workspaceId: WorkspaceDescriptor.ID
         let expiresAt: Date
@@ -961,10 +1058,17 @@ final class AXEventHandler: CGSEventDelegate {
     private struct MatchedManagedReplacementPair {
         let destroy: PendingManagedDestroy
         let create: PendingManagedCreate
+        let compatibleCreateTokens: [WindowToken]
 
         var excludedSequences: Set<UInt64> {
             [destroy.sequence, create.sequence]
         }
+    }
+
+    private struct OneSidedBurstBlocker {
+        let reason: String
+        let token: WindowToken
+        let workspaceId: WorkspaceDescriptor.ID?
     }
 
     private struct StructuralReplacementMatch {
@@ -977,9 +1081,21 @@ final class AXEventHandler: CGSEventDelegate {
         let recordedAt: TimeInterval
     }
 
+    private struct RecentNonManagedFocusEvidence {
+        let recordedAt: TimeInterval
+        let origin: String
+        let token: WindowToken?
+        let source: ActivationEventSource?
+    }
+
     private struct FocusedWindowLossClosePrecursor {
         let workspaceId: WorkspaceDescriptor.ID
         let preservedToken: WindowToken?
+        let recordedAt: TimeInterval
+    }
+
+    private struct ManagedPointerFocusIntent {
+        let candidateTokens: Set<WindowToken>
         let recordedAt: TimeInterval
     }
 
@@ -1017,6 +1133,10 @@ final class AXEventHandler: CGSEventDelegate {
     private static let activationRetryLimit = 5
     private static let untrackedActivationRetryLimit = 6
     private static let nativeAppSwitchLeaseRequestConfirmationGrace: TimeInterval = 0.6
+    // A pointer-down focus intent only bridges the native click to its AX focus
+    // notification. Reuse the established native focus-confirmation grace rather
+    // than introducing another independently tuned timing window.
+    private static let managedPointerFocusIntentTTL = nativeAppSwitchLeaseRequestConfirmationGrace
     private static let createFocusTraceLimit = 128
     private static let managedReplacementTraceLimit = 128
     private static let createFocusTraceLoggingEnabled =
@@ -1059,7 +1179,8 @@ final class AXEventHandler: CGSEventDelegate {
     // tighter same-frame close recovery); observed re-homes here land 5–9 s late.
     private static let recentSameAppTeardownTTL: TimeInterval = 10
     private var recentSameAppWindowCloseByPid: [pid_t: TimeInterval] = [:]
-    private var recentNonManagedFocusByPid: [pid_t: TimeInterval] = [:]
+    private var recentNonManagedFocusByPid: [pid_t: RecentNonManagedFocusEvidence] = [:]
+    private var managedPointerFocusIntent: ManagedPointerFocusIntent?
     private var recentSameAppTeardownByPid: [pid_t: TimeInterval] = [:]
     // Pids that own a recognized app overlay window (e.g. the Ghostty quick
     // terminal). Once observed, the pid stays marked for the process lifetime so
@@ -1130,6 +1251,34 @@ final class AXEventHandler: CGSEventDelegate {
         recentSelfFrontingByPid[pid] = managedReplacementCurrentUptime()
     }
 
+    func recordManagedPointerFocusIntent(_ candidateTokens: [WindowToken]) {
+        let candidateTokens = Set(candidateTokens)
+        guard !candidateTokens.isEmpty else { return }
+        managedPointerFocusIntent = .init(
+            candidateTokens: candidateTokens,
+            recordedAt: managedReplacementCurrentUptime()
+        )
+    }
+
+    private func consumeManagedPointerFocusIntent(
+        matching token: WindowToken,
+        source: ActivationEventSource
+    ) -> Bool {
+        guard source == .focusedWindowChanged || source == .workspaceDidActivateApplication,
+              let intent = managedPointerFocusIntent
+        else {
+            return false
+        }
+        let age = managedReplacementCurrentUptime() - intent.recordedAt
+        guard age <= Self.managedPointerFocusIntentTTL else {
+            managedPointerFocusIntent = nil
+            return false
+        }
+        guard intent.candidateTokens.contains(token) else { return false }
+        managedPointerFocusIntent = nil
+        return true
+    }
+
     private func selfFrontingAgeMs(for pid: pid_t) -> Int? {
         let now = managedReplacementCurrentUptime()
         recentSelfFrontingByPid = recentSelfFrontingByPid.filter {
@@ -1141,6 +1290,7 @@ final class AXEventHandler: CGSEventDelegate {
     private var windowCloseFocusRecoveryContext: WindowCloseFocusRecoveryContext?
     private var deferredInactiveNativeActivationTokens: Set<DeferredInactiveNativeActivationKey> = []
     private var deferredSameAppActiveNativeActivationTokens: Set<WindowToken> = []
+    private var pendingSameAppFocusSuccessionProbeTokens: Set<WindowToken> = []
     private var pendingNativeFullscreenFollowupTasks: [WindowToken: Task<Void, Never>] = [:]
     private var pendingNativeFullscreenStaleCleanupTasks: [WindowToken: Task<Void, Never>] = [:]
     private var pendingWindowRuleReevaluationTask: Task<Void, Never>?
@@ -1156,7 +1306,9 @@ final class AXEventHandler: CGSEventDelegate {
     private var pendingUntrackedActivationRetryTasksByPid: [pid_t: Task<Void, Never>] = [:]
     private var untrackedActivationRetryCountByPid: [pid_t: Int] = [:]
     private var createFocusTrace: [NiriCreateFocusTraceEvent] = []
+    private var createFocusTraceDroppedCount = 0
     private var managedReplacementTrace: [ManagedReplacementTraceEvent] = []
+    private var managedReplacementTraceDroppedCount = 0
     private var nextManagedReplacementEventSequence: UInt64 = 0
     var windowInfoProvider: ((UInt32) -> WindowServerInfo?)?
     var windowInfoProviderIsAuthoritativeForTests = false
@@ -1169,6 +1321,14 @@ final class AXEventHandler: CGSEventDelegate {
     var frameProvider: ((AXWindowRef) -> CGRect?)?
     var fastFrameProvider: ((AXWindowRef) -> CGRect?)?
     var isFullscreenProvider: ((AXWindowRef) -> Bool)?
+    /// OS-boundary seam for whether WindowServer currently orders a window in.
+    /// Tests fake this observation while exercising the production overlay
+    /// lifecycle state machine rather than deciding the lifecycle themselves.
+    var windowOrderedInProvider: ((UInt32) -> Bool?)?
+    /// OS-boundary seam for the front-to-back visible WindowServer snapshot.
+    /// Production queries SkyLight; tests supply windows while exercising the
+    /// same overlay recognition and lifecycle path.
+    var visibleWindowInfoProvider: (() -> [WindowServerInfo])?
     var spaceDisplayResolver: ((UInt64, [Monitor]) -> CGDirectDisplayID?)?
     /// OS-boundary seam for the display the pointer is currently over. `nil` uses the
     /// live AppKit pointer; tests set it (e.g. to `{ nil }`) so the real cursor position
@@ -1221,6 +1381,24 @@ final class AXEventHandler: CGSEventDelegate {
         )
     }
 
+    func traceRetentionSnapshot() -> TraceRetentionSnapshot {
+        TraceRetentionSnapshot(
+            createFocusRetainedCount: createFocusTrace.count,
+            createFocusDroppedCount: createFocusTraceDroppedCount,
+            createFocusLimit: Self.createFocusTraceLimit,
+            managedReplacementRetainedCount: managedReplacementTrace.count,
+            managedReplacementDroppedCount: managedReplacementTraceDroppedCount,
+            managedReplacementLimit: Self.managedReplacementTraceLimit
+        )
+    }
+
+    func resetRuntimeTraceBuffersForCapture() {
+        createFocusTrace.removeAll(keepingCapacity: true)
+        createFocusTraceDroppedCount = 0
+        managedReplacementTrace.removeAll(keepingCapacity: true)
+        managedReplacementTraceDroppedCount = 0
+    }
+
     func setup() {
         CGSEventObserver.shared.delegate = self
         CGSEventObserver.shared.start()
@@ -1233,6 +1411,7 @@ final class AXEventHandler: CGSEventDelegate {
         resetUntrackedActivationRetryState()
         recentSameAppWindowCloseByPid.removeAll()
         recentNonManagedFocusByPid.removeAll()
+        managedPointerFocusIntent = nil
         recentSameAppTeardownByPid.removeAll()
         overlayCapablePids.removeAll()
         recognizedOverlayWindowIdsByPid.removeAll()
@@ -1247,6 +1426,7 @@ final class AXEventHandler: CGSEventDelegate {
         lastExplicitManagedConfirmation = nil
         deferredInactiveNativeActivationTokens.removeAll()
         deferredSameAppActiveNativeActivationTokens.removeAll()
+        pendingSameAppFocusSuccessionProbeTokens.removeAll()
         endWindowCloseFocusRecovery()
         resetNativeFullscreenReplacementState()
         resetWindowStabilizationState()
@@ -1393,7 +1573,12 @@ final class AXEventHandler: CGSEventDelegate {
         recentManagedWorkspaceByPid[pid] = .init(workspaceId: workspaceId, recordedAt: now)
         recentAppActivationByPid[pid] = now
         recentSameAppWindowCloseByPid[pid] = now
-        recentNonManagedFocusByPid[pid] = now
+        recentNonManagedFocusByPid[pid] = .init(
+            recordedAt: now,
+            origin: "termination_pruning_test_seed",
+            token: token,
+            source: nil
+        )
         overlayCapablePids.insert(pid)
         recognizedOverlayWindowIdsByPid[pid, default: []].insert(windowId)
         focusedWindowLossClosePrecursorByPid[pid] = .init(
@@ -1461,6 +1646,7 @@ final class AXEventHandler: CGSEventDelegate {
         resetUntrackedActivationRetryState()
         recentSameAppWindowCloseByPid.removeAll()
         recentNonManagedFocusByPid.removeAll()
+        managedPointerFocusIntent = nil
         recentSameAppTeardownByPid.removeAll()
         overlayCapablePids.removeAll()
         recognizedOverlayWindowIdsByPid.removeAll()
@@ -1473,10 +1659,10 @@ final class AXEventHandler: CGSEventDelegate {
         recentManagedAdmissionByToken.removeAll()
         deferredInactiveNativeActivationTokens.removeAll()
         deferredSameAppActiveNativeActivationTokens.removeAll()
+        pendingSameAppFocusSuccessionProbeTokens.removeAll()
         resetActivationRetryState()
         controller?.focusBridge.reset()
-        createFocusTrace.removeAll(keepingCapacity: true)
-        managedReplacementTrace.removeAll(keepingCapacity: true)
+        resetRuntimeTraceBuffersForCapture()
         pendingWindowRuleReevaluationTask?.cancel()
         pendingWindowRuleReevaluationTask = nil
         pendingWindowRuleReevaluationTargets.removeAll()
@@ -1757,6 +1943,7 @@ final class AXEventHandler: CGSEventDelegate {
     func recordNiriCreateFocusTrace(_ event: NiriCreateFocusTraceEvent) {
         if createFocusTrace.count == Self.createFocusTraceLimit {
             createFocusTrace.removeFirst()
+            createFocusTraceDroppedCount += 1
         }
         createFocusTrace.append(event)
 
@@ -1788,6 +1975,7 @@ final class AXEventHandler: CGSEventDelegate {
         )
         if managedReplacementTrace.count == Self.managedReplacementTraceLimit {
             managedReplacementTrace.removeFirst()
+            managedReplacementTraceDroppedCount += 1
         }
         managedReplacementTrace.append(event)
 
@@ -2571,14 +2759,18 @@ final class AXEventHandler: CGSEventDelegate {
     }
 
     func handleRemoved(token: WindowToken) {
+        handleRemoved(token: token, settledReplacementKey: nil)
+    }
+
+    private func handleRemoved(
+        token: WindowToken,
+        settledReplacementKey: ManagedReplacementKey?
+    ) {
         guard let controller else { return }
         recordRecentSameAppWindowClose(pid: token.pid)
         recordRecentSameAppTeardown(pid: token.pid)
         let entry = controller.workspaceManager.entry(for: token)
         let affectedWorkspaceId = entry?.workspaceId
-        let confirmedTokenBeforeRemoval = controller.workspaceManager.confirmedManagedFocusToken
-        let recoveryContextBeforeRemoval = activeWindowCloseFocusRecoveryContext()
-        let closePrecursor = focusedWindowLossClosePrecursor(for: token.pid)
 
         cancelPostCreateLifecycleVerification(for: token)
         cancelDestroyLivenessVerification(for: token)
@@ -2586,6 +2778,10 @@ final class AXEventHandler: CGSEventDelegate {
         if handleNativeFullscreenDestroy(token) {
             return
         }
+
+        let confirmedTokenBeforeRemoval = controller.workspaceManager.confirmedManagedFocusToken
+        let recoveryContextBeforeRemoval = activeWindowCloseFocusRecoveryContext()
+        let closePrecursor = focusedWindowLossClosePrecursor(for: token.pid)
 
         clearManagedFocusState(matching: token, workspaceId: affectedWorkspaceId)
         controller.nativeFullscreenPlaceholderManager.remove(token)
@@ -2693,11 +2889,26 @@ final class AXEventHandler: CGSEventDelegate {
                     ]
                 )
             }
+            let postLayout: LayoutRefreshController.PostLayoutAction? = settledReplacementKey.map { key in
+                controller.diagnostics.recordRuntimeViewportTrace(
+                    workspaceId: wsId,
+                    reason: "replacement_focus_reconcile_armed",
+                    details: [
+                        "uptimeMs=\(traceUptimeMs())",
+                        "pid=\(key.pid)",
+                        "removedToken=\(token)"
+                    ]
+                )
+                return { [weak self] in
+                    self?.reconcileFocusAfterSettledManagedReplacementRemoval(for: key)
+                }
+            }
             controller.layoutRefreshController.requestWindowRemoval(
                 workspaceId: wsId,
                 removedNodeId: removedNodeId,
                 niriOldFrames: oldFrames,
-                shouldRecoverFocus: recoverFocusNow
+                shouldRecoverFocus: recoverFocusNow,
+                postLayout: postLayout
             )
         }
         scheduleWindowRuleReevaluationIfNeeded(targets: [.pid(token.pid)])
@@ -2833,7 +3044,12 @@ final class AXEventHandler: CGSEventDelegate {
         else {
             return
         }
-        beginWindowCloseFocusRecovery(in: workspaceId, suppressingPid: pid, reason: "auxiliary_destroy")
+        beginWindowCloseFocusRecovery(
+            in: workspaceId,
+            suppressingPid: pid,
+            preservedToken: focusedToken,
+            reason: "auxiliary_destroy"
+        )
     }
 
     func handleManagedWindowHiddenStateChanged(
@@ -2902,6 +3118,42 @@ final class AXEventHandler: CGSEventDelegate {
         return true
     }
 
+    private func confirmManagedPointerFocusIntentIfNeeded(
+        entry: WindowModel.Entry,
+        isWorkspaceActive: Bool,
+        source: ActivationEventSource
+    ) -> Bool {
+        guard consumeManagedPointerFocusIntent(matching: entry.token, source: source) else {
+            return false
+        }
+        // A matching live focused token turns an otherwise cause-less app-level
+        // activation into direct evidence of the user's pointer choice.
+        lastExplicitManagedConfirmation = (entry.token, managedReplacementCurrentUptime())
+        controller?.suppressMouseMoveToFocusedWindow(for: entry.token)
+        controller?.diagnostics.recordRuntimeViewportTrace(
+            workspaceId: entry.workspaceId,
+            reason: "managed_pointer_focus_intent_confirmed",
+            details: [
+                "token=\(entry.token)",
+                "source=\(source.rawValue)",
+                "explicitStamp=\(lastExplicitManagedConfirmation.map { String(describing: $0.token) } ?? "nil")",
+                "activeRecoveryWorkspace=\(activeWindowCloseFocusRecoveryWorkspaceId()?.uuidString ?? "nil")",
+                "overlayLifecycleActive=\(overlayWindowLifecycleActive(for: entry.pid))",
+                "recentSameAppCloseAgeMs=\(recentSameAppCloseAgeMs(for: entry.pid))"
+            ]
+        )
+        endWindowCloseFocusRecovery()
+        handleManagedAppActivation(
+            entry: entry,
+            isWorkspaceActive: isWorkspaceActive,
+            appFullscreen: false,
+            source: source,
+            confirmRequest: true,
+            origin: .external
+        )
+        return true
+    }
+
     private func stableRecoveryFocusTarget(
         context: WindowCloseFocusRecoveryContext,
         workspaceId: WorkspaceDescriptor.ID
@@ -2943,8 +3195,15 @@ final class AXEventHandler: CGSEventDelegate {
 
     private func redirectToStableRecoveryFocusIfNeeded(
         observedEntry: WindowModel.Entry,
-        workspaceId: WorkspaceDescriptor.ID
+        workspaceId: WorkspaceDescriptor.ID,
+        requestDisposition: ActivationRequestDisposition
     ) -> Bool {
+        // A confirmation matching Nehir's active request is already the chosen
+        // recovery target. Recovery arbitration may absorb unsolicited native
+        // successor churn, but it must never replace an in-flight requested focus.
+        if case .matchesActiveRequest = requestDisposition {
+            return false
+        }
         guard let context = activeWindowCloseFocusRecoveryContext(),
               context.workspaceId == workspaceId
         else {
@@ -3039,12 +3298,18 @@ final class AXEventHandler: CGSEventDelegate {
         return observedFrame(for: selectedEntry) == nil
     }
 
-    private func hasSameAppOverlayRecoverySignal(for entry: WindowModel
-        .Entry) -> (recentNonManaged: Bool, overlayVisible: Bool)
-    {
-        let recentNonManaged = hasRecentNonManagedFocus(for: entry.pid)
-        let overlayVisible = hasVisibleSamePidOverlayWindow(for: entry)
-        return (recentNonManaged, overlayVisible)
+    private struct SameAppOverlayRecoverySignal {
+        let recentNonManaged: Bool
+        var overlayVisible: Bool
+        let lifecycleActive: Bool
+    }
+
+    private func hasSameAppOverlayRecoverySignal(for entry: WindowModel.Entry) -> SameAppOverlayRecoverySignal {
+        .init(
+            recentNonManaged: hasRecentNonManagedFocus(for: entry.pid),
+            overlayVisible: hasVisibleSamePidOverlayWindow(for: entry),
+            lifecycleActive: overlayWindowLifecycleActive(for: entry.pid)
+        )
     }
 
     private struct SameAppCloseRecoveryViewportPins {
@@ -3059,14 +3324,14 @@ final class AXEventHandler: CGSEventDelegate {
         entry: WindowModel.Entry,
         wsId: WorkspaceDescriptor.ID,
         selectedSameAppFocusDisappearedBeforeConfirm: Bool,
-        overlaySignal: (recentNonManaged: Bool, overlayVisible: Bool)
+        overlaySignal: SameAppOverlayRecoverySignal
     ) -> SameAppCloseRecoveryViewportPins {
         let closeRecoveryPin = activeWindowCloseFocusRecoveryContext()?.workspaceId == wsId
         let outsideActiveCloseRecovery = activeWindowCloseFocusRecoveryWorkspaceId() == nil
         let recentSameAppClosePin = outsideActiveCloseRecovery
             && hasRecentSameAppWindowClose(for: entry.pid)
         let overlayRecoveryPin = outsideActiveCloseRecovery
-            && (overlaySignal.recentNonManaged || overlaySignal.overlayVisible)
+            && (overlaySignal.lifecycleActive || overlaySignal.overlayVisible)
         let selectedSameAppFocusDisappearedPin = outsideActiveCloseRecovery
             && isWithinSameAppCloseRecoveryWindow(pid: entry.pid)
             && (selectedSameAppFocusDisappearedBeforeConfirm
@@ -3084,6 +3349,178 @@ final class AXEventHandler: CGSEventDelegate {
         )
     }
 
+    /// A no-request same-app focus change is ambiguous until the previously
+    /// confirmed window's AX liveness is known. If it is still present, this is
+    /// a genuine window switch and the activation can be retried. If it is gone,
+    /// macOS selected a successor while closing it; preserve the predecessor as
+    /// the removal seed so niri can choose the spatially closest fallback.
+    private func shouldDeferSameAppFocusSuccessionBeforeConfirm(
+        observedEntry: WindowModel.Entry,
+        requestDisposition: ActivationRequestDisposition,
+        source: ActivationEventSource,
+        origin: ActivationCallOrigin
+    ) -> Bool {
+        guard origin == .external,
+              source == .focusedWindowChanged,
+              case .unrelatedNoRequest = requestDisposition,
+              activeWindowCloseFocusRecoveryWorkspaceId() == nil,
+              let controller,
+              !controller.workspaceManager.isNonManagedFocusActive,
+              let predecessorToken = controller.workspaceManager.confirmedManagedFocusToken,
+              predecessorToken != observedEntry.token,
+              predecessorToken.pid == observedEntry.pid,
+              let predecessorEntry = controller.workspaceManager.entry(for: predecessorToken)
+        else {
+            return false
+        }
+
+        let successorToken = observedEntry.token
+        let predecessorWorkspaceId = predecessorEntry.workspaceId
+        guard pendingSameAppFocusSuccessionProbeTokens.insert(successorToken).inserted else {
+            return true
+        }
+
+        func record(phase: String, decision: String, enumeration: String) {
+            controller.diagnostics.recordRuntimeViewportTrace(
+                workspaceId: predecessorWorkspaceId,
+                reason: "same_app_focus_succession_probe",
+                details: [
+                    "phase=\(phase)",
+                    "decision=\(decision)",
+                    "enumeration=\(enumeration)",
+                    "predecessor=\(predecessorToken)",
+                    "successor=\(successorToken)",
+                    "source=\(source.rawValue)",
+                    "confirmedFocus=\(controller.workspaceManager.confirmedManagedFocusToken.map(String.init(describing:)) ?? "nil")",
+                    "observedFocus=\(focusedWindowToken(for: observedEntry.pid).map(String.init(describing:)) ?? "nil")",
+                    "activeRequest=\(controller.workspaceManager.activeFocusRequestToken.map(String.init(describing:)) ?? "nil")",
+                    "nonManagedFocusActive=\(controller.workspaceManager.isNonManagedFocusActive)"
+                ]
+            )
+        }
+
+        record(phase: "started", decision: "defer", enumeration: "pending")
+        recordNiriCreateFocusTrace(
+            .init(
+                kind: .followFocusToParkedWindow(
+                    token: successorToken,
+                    workspaceId: observedEntry.workspaceId,
+                    decision: "defer reason=same_pid_succession_preconfirm prev=\(predecessorToken)"
+                )
+            )
+        )
+
+        Task { @MainActor [weak self] in
+            guard let self, let controller = self.controller else { return }
+            let enumeration = await controller.axManager.windowEnumerationForPID(observedEntry.pid)
+            guard self.pendingSameAppFocusSuccessionProbeTokens.remove(successorToken) != nil else {
+                return
+            }
+
+            let confirmedToken = controller.workspaceManager.confirmedManagedFocusToken
+            let observedFocusToken = self.focusedWindowToken(for: observedEntry.pid)
+            guard confirmedToken == predecessorToken,
+                  observedFocusToken == successorToken,
+                  controller.workspaceManager.activeFocusRequestToken == nil,
+                  self.activeWindowCloseFocusRecoveryWorkspaceId() == nil,
+                  controller.workspaceManager.entry(for: predecessorToken) != nil,
+                  controller.workspaceManager.entry(for: successorToken) != nil
+            else {
+                record(phase: "completed", decision: "discard", enumeration: "stale")
+                self.recordNiriCreateFocusTrace(
+                    .init(
+                        kind: .followFocusToParkedWindow(
+                            token: successorToken,
+                            workspaceId: observedEntry.workspaceId,
+                            decision: "skip reason=same_pid_succession_probe_stale prev=\(predecessorToken)"
+                        )
+                    )
+                )
+                return
+            }
+
+            if controller.workspaceManager.isNonManagedFocusActive {
+                record(phase: "completed", decision: "retry", enumeration: "nonmanaged_interaction")
+                self.recordNiriCreateFocusTrace(
+                    .init(
+                        kind: .followFocusToParkedWindow(
+                            token: successorToken,
+                            workspaceId: observedEntry.workspaceId,
+                            decision: "retry reason=same_pid_nonmanaged_interaction prev=\(predecessorToken)"
+                        )
+                    )
+                )
+                self.handleAppActivation(
+                    pid: observedEntry.pid,
+                    source: source,
+                    origin: .retry
+                )
+                return
+            }
+
+            switch enumeration {
+            case .failed:
+                record(phase: "completed", decision: "retry", enumeration: "failed")
+                self.recordNiriCreateFocusTrace(
+                    .init(
+                        kind: .followFocusToParkedWindow(
+                            token: successorToken,
+                            workspaceId: observedEntry.workspaceId,
+                            decision: "retry reason=same_pid_succession_probe_failed prev=\(predecessorToken)"
+                        )
+                    )
+                )
+                self.handleAppActivation(
+                    pid: observedEntry.pid,
+                    source: source,
+                    origin: .retry
+                )
+            case .success(let windows):
+                let predecessorAlive = windows.contains { _, pid, windowId in
+                    pid == predecessorToken.pid && windowId == predecessorToken.windowId
+                }
+                if predecessorAlive {
+                    record(phase: "completed", decision: "retry", enumeration: "predecessor_alive")
+                    self.recordNiriCreateFocusTrace(
+                        .init(
+                            kind: .followFocusToParkedWindow(
+                                token: successorToken,
+                                workspaceId: observedEntry.workspaceId,
+                                decision: "retry reason=same_pid_predecessor_alive prev=\(predecessorToken)"
+                            )
+                        )
+                    )
+                    self.handleAppActivation(
+                        pid: observedEntry.pid,
+                        source: source,
+                        origin: .retry
+                    )
+                    return
+                }
+
+                self.recordRecentSameAppWindowClose(pid: observedEntry.pid)
+                self.recordRecentSameAppTeardown(pid: observedEntry.pid)
+                self.beginWindowCloseFocusRecovery(
+                    in: predecessorWorkspaceId,
+                    suppressingPid: observedEntry.pid,
+                    preservedToken: predecessorToken,
+                    reason: "same_app_focus_succession_ax_missing"
+                )
+                record(phase: "completed", decision: "preserve_predecessor", enumeration: "predecessor_missing")
+                self.recordNiriCreateFocusTrace(
+                    .init(
+                        kind: .followFocusToParkedWindow(
+                            token: successorToken,
+                            workspaceId: observedEntry.workspaceId,
+                            decision: "skip reason=same_pid_close_succession_preconfirm prev=\(predecessorToken)"
+                        )
+                    )
+                )
+            }
+        }
+        return true
+    }
+
     private func shouldSuppressSameAppParkedFocusBeforeConfirm(
         observedEntry: WindowModel.Entry,
         workspaceId: WorkspaceDescriptor.ID,
@@ -3095,7 +3532,10 @@ final class AXEventHandler: CGSEventDelegate {
               !isEntryOnScreen(observedEntry)
         else { return false }
         let signal = hasSameAppOverlayRecoverySignal(for: observedEntry)
-        guard signal.recentNonManaged || signal.overlayVisible else { return false }
+        let hasCloseRecoveryEvidence = hasRecentSameAppWindowClose(for: observedEntry.pid)
+            || signal.lifecycleActive
+            || signal.overlayVisible
+        guard hasCloseRecoveryEvidence else { return false }
         guard case .unrelatedNoRequest = requestDisposition,
               let previousToken = controller?.workspaceManager.confirmedManagedFocusToken,
               previousToken.pid == observedEntry.pid,
@@ -3112,7 +3552,8 @@ final class AXEventHandler: CGSEventDelegate {
                 "previousToken=\(previousToken)",
                 "requestDisposition=\(requestDisposition)",
                 "recentNonManaged=\(signal.recentNonManaged)",
-                "overlayVisible=\(signal.overlayVisible)"
+                "overlayVisible=\(signal.overlayVisible)",
+                "overlayLifecycleActive=\(signal.lifecycleActive)"
             ]
         )
         return true
@@ -3196,21 +3637,19 @@ final class AXEventHandler: CGSEventDelegate {
     private func redirectToStableSameAppRecoveryFocusIfNeeded(
         observedEntry: WindowModel.Entry,
         workspaceId: WorkspaceDescriptor.ID,
+        requestDisposition: ActivationRequestDisposition,
         phase: StableRecoveryRedirectPhase
     ) -> Bool {
         guard activeWindowCloseFocusRecoveryWorkspaceId() == nil else { return false }
-        // A window the user just created lands here with the same `recentNonManaged`
-        // pid signal an overlay steal would produce: opening it (e.g. Finder ⌘N) is a
-        // non-managed app activation, which records recentNonManagedFocus for the new
-        // window's OWN pid. That alone satisfies the overlay-recovery evidence
-        // (hasSameAppOverlayRecoverySignal is evaluated on the observed window), so the
-        // heuristic redirects focus off it. The redirect target is not required to be an
-        // overlay app — stableViewportFocusTarget just picks the nearest on-screen tile
-        // in the workspace excluding the new window, so focus bounces to whatever else
-        // happens to share the workspace. A freshly *managed*-admitted window is an
-        // intentional, stable focus target, not an overlay steal; genuine focus-stealing
-        // overlays are non-managed and never appear in recentManagedAdmissionByToken, so
-        // this exempts only real new windows.
+        // These redirects arbitrate causeless native successor focus only. A
+        // matching managed request already carries explicit Nehir/user intent.
+        if case .matchesActiveRequest = requestDisposition {
+            return false
+        }
+        // A freshly managed-admitted window is an intentional, stable focus target,
+        // not an overlay-close successor. Keep this exemption even though overlay
+        // recovery now requires recognized lifecycle evidence: a real overlay can close
+        // while the user creates a normal window, and that window must remain the target.
         if recentManagedAdmissionWorkspaceId(for: observedEntry.token) == workspaceId {
             return false
         }
@@ -3224,7 +3663,7 @@ final class AXEventHandler: CGSEventDelegate {
             for: observedEntry,
             workspaceId: workspaceId
         )
-        let hasOverlayRecoveryEvidence = signal.recentNonManaged || signal.overlayVisible
+        let hasOverlayRecoveryEvidence = signal.lifecycleActive || signal.overlayVisible
         let shouldRedirect = switch phase {
         case .preconfirm:
             hasOverlayRecoveryEvidence
@@ -3236,18 +3675,28 @@ final class AXEventHandler: CGSEventDelegate {
         }
         guard shouldRedirect else { return false }
         let target = stableViewportFocusTarget(workspaceId: workspaceId, excluding: observedEntry.token)
+        let targetEntry = target.flatMap { controller?.workspaceManager.entry(for: $0) }
         controller?.diagnostics.recordRuntimeViewportTrace(
             workspaceId: workspaceId,
             reason: phase.traceReason,
             details: [
+                "phase=\(phase.traceReason)",
+                "decision=\(target == nil ? "no_target" : "redirect_candidate")",
                 "observedToken=\(observedEntry.token)",
+                "observedPid=\(observedEntry.pid)",
                 "targetToken=\(target.map(String.init(describing:)) ?? "nil")",
+                "targetPid=\(targetEntry.map { String($0.pid) } ?? "nil")",
+                "targetWorkspace=\(targetEntry?.workspaceId.uuidString ?? "nil")",
+                "targetMode=\(targetEntry.map { String(describing: $0.mode) } ?? "nil")",
+                "targetSamePid=\(targetEntry.map { String($0.pid == observedEntry.pid) } ?? "nil")",
                 "recentSameAppClose=\(recentSameAppClose)",
+                "recentSameAppCloseAgeMs=\(recentSameAppCloseAgeMs(for: observedEntry.pid))",
                 "recentNonManaged=\(signal.recentNonManaged)",
                 "overlayVisible=\(signal.overlayVisible)",
+                "overlayLifecycleActive=\(signal.lifecycleActive)",
                 "previousSameAppFocusDisappeared=\(previousSameAppFocusDisappeared)",
                 "selectedSameAppFocusDisappeared=\(selectedSameAppFocusDisappeared)"
-            ]
+            ] + recentNonManagedFocusTraceDetails(for: observedEntry.pid)
         )
         guard let target, target != observedEntry.token else { return false }
         if let reverseLatch = reverseSameAppRecoveryRedirectLatch(
@@ -3273,6 +3722,7 @@ final class AXEventHandler: CGSEventDelegate {
                     "recentSameAppClose=\(recentSameAppClose)",
                     "recentNonManaged=\(signal.recentNonManaged)",
                     "overlayVisible=\(signal.overlayVisible)",
+                    "overlayLifecycleActive=\(signal.lifecycleActive)",
                     "previousSameAppFocusDisappeared=\(previousSameAppFocusDisappeared)",
                     "selectedSameAppFocusDisappeared=\(selectedSameAppFocusDisappeared)"
                 ]
@@ -3292,23 +3742,27 @@ final class AXEventHandler: CGSEventDelegate {
     private func redirectToStableCloseSuccessorFocusBeforeConfirmIfNeeded(
         observedEntry: WindowModel.Entry,
         workspaceId: WorkspaceDescriptor.ID,
+        requestDisposition: ActivationRequestDisposition,
         source: ActivationEventSource
     ) -> Bool {
         guard source == .focusedWindowChanged else { return false }
         return redirectToStableSameAppRecoveryFocusIfNeeded(
             observedEntry: observedEntry,
             workspaceId: workspaceId,
+            requestDisposition: requestDisposition,
             phase: .preconfirm
         )
     }
 
     private func redirectToStableOverlayRecoveryFocusIfNeeded(
         observedEntry: WindowModel.Entry,
-        workspaceId: WorkspaceDescriptor.ID
+        workspaceId: WorkspaceDescriptor.ID,
+        requestDisposition: ActivationRequestDisposition
     ) -> Bool {
         redirectToStableSameAppRecoveryFocusIfNeeded(
             observedEntry: observedEntry,
             workspaceId: workspaceId,
+            requestDisposition: requestDisposition,
             phase: .overlay
         )
     }
@@ -3328,26 +3782,74 @@ final class AXEventHandler: CGSEventDelegate {
             return false
         }
 
-        let overlayFocusIsActive = controller.workspaceManager.isNonManagedFocusActive
+        let overlayFocusIsActive = overlayWindowLifecycleActive(for: observedEntry.pid)
             || hasVisibleSamePidOverlayWindow(for: observedEntry)
         guard overlayFocusIsActive else { return false }
 
-        // While an unmanaged overlay (for example Ghostty Quick Terminal) owns
-        // native focus, macOS may report the app's regular managed window as the
-        // focused AX window. The overlay should not move Nehir's managed
-        // interaction/focus anchor away from the window the user was using before
-        // the overlay appeared, even when both windows are on the same workspace.
+        // Ordered-in/recent lifecycle evidence can overlap the user's deliberate
+        // focus switch between two visible managed windows. Suppress app-internal
+        // managed-window churn only while an unmanaged overlay actually owns focus;
+        // lifecycle evidence alone must not keep the previous managed token pinned.
+        guard controller.workspaceManager.isNonManagedFocusActive else {
+            controller.diagnostics.recordRuntimeViewportTrace(
+                workspaceId: observedEntry.workspaceId,
+                reason: "overlay_managed_activation_allowed",
+                details: [
+                    "token=\(observedEntry.token)",
+                    "confirmedFocus=\(focusedToken)",
+                    "reason=non_managed_focus_inactive"
+                ]
+            )
+            return false
+        }
+
+        controller.diagnostics.recordRuntimeViewportTrace(
+            workspaceId: observedEntry.workspaceId,
+            reason: "overlay_managed_activation_suppressed",
+            details: [
+                "token=\(observedEntry.token)",
+                "confirmedFocus=\(focusedToken)",
+                "reason=non_managed_overlay_focus_active"
+            ]
+        )
         return true
     }
 
-    private func hasVisibleSamePidOverlayWindow(for entry: WindowModel.Entry) -> Bool {
-        guard let windowId = UInt32(exactly: entry.windowId) else { return false }
-        let currentNonManagedFocusToken = controller?.currentBorderTarget().flatMap { target in
-            !target.isManaged ? target.token : nil
+    private func sampleVisibleSamePidOverlayLifecycle(
+        for pid: pid_t,
+        source: ActivationEventSource
+    ) {
+        guard let controller else { return }
+        let visibleOverlay = hasVisibleOverlayWindow(for: pid)
+        let phase = overlayLifecyclePhase(for: pid)
+        guard let workspaceId = controller.workspaceManager.confirmedManagedFocusToken
+            .flatMap({ controller.workspaceManager.entry(for: $0)?.workspaceId })
+            ?? controller.interactionWorkspace()?.id
+        else {
+            return
         }
-        return SkyLight.shared.queryAllVisibleWindows().contains { info in
-            guard info.pid == entry.pid,
-                  info.id != windowId,
+        controller.diagnostics.recordRuntimeViewportTrace(
+            workspaceId: workspaceId,
+            reason: "overlay_lifecycle_sample",
+            details: [
+                "pid=\(pid)",
+                "source=\(source.rawValue)",
+                "visibleOverlay=\(visibleOverlay)",
+                "overlayCapablePid=\(overlayCapablePids.contains(pid))",
+                "recognizedWindowIds=\(recognizedOverlayWindowIdsByPid[pid]?.sorted() ?? [])",
+                "phase=\(String(describing: phase))"
+            ]
+        )
+    }
+
+    private func hasVisibleSamePidOverlayWindow(for entry: WindowModel.Entry) -> Bool {
+        hasVisibleOverlayWindow(for: entry.pid)
+    }
+
+    private func hasVisibleOverlayWindow(for pid: pid_t) -> Bool {
+        let visibleWindows = visibleWindowInfoProvider?() ?? SkyLight.shared.queryAllVisibleWindows()
+        return visibleWindows.contains { info in
+            guard info.pid == pid,
                   info.level != 0,
                   !info.frame.isNull,
                   !info.frame.isEmpty
@@ -3355,11 +3857,7 @@ final class AXEventHandler: CGSEventDelegate {
                 return false
             }
 
-            let token = WindowToken(pid: entry.pid, windowId: Int(info.id))
-            if currentNonManagedFocusToken == token {
-                return true
-            }
-            return isKnownSamePidOverlayWindow(info, pid: entry.pid)
+            return isKnownSamePidOverlayWindow(info, pid: pid)
         }
     }
 
@@ -3373,32 +3871,48 @@ final class AXEventHandler: CGSEventDelegate {
             windowInfo: info,
             includeTitle: false
         )
+        let token = WindowToken(pid: pid, windowId: Int(info.id))
         let decision = controller.windowRuleEngine.decision(
             for: facts,
-            token: WindowToken(pid: pid, windowId: Int(info.id)),
+            token: token,
             appFullscreen: false
         )
-        if case let .builtInRule(name) = decision.source,
-           Self.isOverlayCapableRuleName(name)
-        {
-            overlayCapablePids.insert(pid)
-            return true
+        guard case let .builtInRule(name) = decision.source,
+              Self.isOverlayCapableRuleName(name)
+        else {
+            return false
         }
-        return false
+        overlayCapablePids.insert(pid)
+        guard Self.isOverlayLifecycleWindow(ruleName: name, facts: facts) else {
+            return false
+        }
+        recognizeOverlayWindow(token: token, ruleName: name)
+        return true
     }
 
-    func armOverlayCapabilityIfNeeded(source: WindowDecisionSource, token: WindowToken) {
+    func armOverlayCapabilityIfNeeded(
+        source: WindowDecisionSource,
+        token: WindowToken,
+        facts: WindowRuleFacts
+    ) {
         guard case let .builtInRule(name) = source,
               Self.isOverlayCapableRuleName(name)
         else {
             return
         }
         overlayCapablePids.insert(token.pid)
+        guard Self.isOverlayLifecycleWindow(ruleName: name, facts: facts) else {
+            return
+        }
+        recognizeOverlayWindow(token: token, ruleName: name)
+    }
+
+    private func recognizeOverlayWindow(token: WindowToken, ruleName: String) {
         let inserted = recognizedOverlayWindowIdsByPid[token.pid, default: []]
             .insert(token.windowId).inserted
         if inserted {
             recordNiriCreateFocusTrace(
-                .init(kind: .overlayWindowRecognized(token: token, ruleName: name))
+                .init(kind: .overlayWindowRecognized(token: token, ruleName: ruleName))
             )
         }
     }
@@ -3413,6 +3927,15 @@ final class AXEventHandler: CGSEventDelegate {
             || name == "systemTextInputPanel"
     }
 
+    private static func isOverlayLifecycleWindow(ruleName: String, facts: WindowRuleFacts) -> Bool {
+        if ruleName == "ghosttyQuickTerminalOverlay" {
+            guard let windowServer = facts.windowServer else { return false }
+            return windowServer.parentId == 0 && windowServer.hasFloatingTag
+        }
+        return ruleName == "cleanShotRecordingOverlay"
+            || ruleName == "systemTextInputPanel"
+    }
+
     private func recordCloseRecoveryActivationGate(
         entry observedEntry: WindowModel.Entry,
         isWorkspaceActive: Bool,
@@ -3420,7 +3943,7 @@ final class AXEventHandler: CGSEventDelegate {
         source: ActivationEventSource,
         origin: ActivationCallOrigin,
         decision: String,
-        overlaySignal: (recentNonManaged: Bool, overlayVisible: Bool)? = nil,
+        overlaySignal: SameAppOverlayRecoverySignal? = nil,
         sameAppCloseOrOverlayEvidence: Bool? = nil
     ) {
         let recentSameAppClose = hasRecentSameAppWindowClose(for: observedEntry.pid)
@@ -3443,6 +3966,7 @@ final class AXEventHandler: CGSEventDelegate {
             "overlayCapablePid=\(overlayCapablePids.contains(observedEntry.pid))",
             "nonManagedFocusActive=\(controller?.workspaceManager.isNonManagedFocusActive ?? false)",
             "overlayVisible=\(overlaySignal.map { String($0.overlayVisible) } ?? "not_checked")",
+            "overlayLifecycleActive=\(overlaySignal.map { String($0.lifecycleActive) } ?? "not_checked")",
             "sameAppCloseOrOverlayEvidence=\(sameAppCloseOrOverlayEvidence.map { String($0) } ?? "not_checked")",
             "currentTarget=\(currentTarget.map { String(describing: $0.token) } ?? "nil")",
             "currentTargetManaged=\(currentTarget.map { String($0.isManaged) } ?? "nil")",
@@ -3451,7 +3975,7 @@ final class AXEventHandler: CGSEventDelegate {
             "focusedWindowLossPrecursorToken=\(precursor?.preservedToken.map(String.init(describing:)) ?? "nil")",
             "focusedWindowLossPrecursorAgeMs=\(focusedWindowLossPrecursorAgeMs(for: observedEntry.pid))",
             "decision=\(decision)"
-        ]
+        ] + recentNonManagedFocusTraceDetails(for: observedEntry.pid)
         controller?.diagnostics.recordRuntimeViewportTrace(
             workspaceId: observedEntry.workspaceId,
             reason: "close_recovery_activation_gate",
@@ -3583,7 +4107,7 @@ final class AXEventHandler: CGSEventDelegate {
         guard origin == .external,
               source == .focusedWindowChanged,
               case .unrelatedNoRequest = requestDisposition,
-              overlayCapablePids.contains(observedEntry.pid),
+              overlayWindowLifecycleActive(for: observedEntry.pid),
               let controller,
               controller.workspaceManager.confirmedManagedFocusToken == observedEntry.token
         else {
@@ -3624,7 +4148,7 @@ final class AXEventHandler: CGSEventDelegate {
     ) -> Bool {
         guard source == .focusedWindowChanged,
               case .unrelatedNoRequest = requestDisposition,
-              overlayCapablePids.contains(observedEntry.pid),
+              overlayWindowLifecycleActive(for: observedEntry.pid),
               !isEntryOnScreen(observedEntry),
               let controller,
               controller.workspaceManager.confirmedManagedFocusToken != observedEntry.token
@@ -3806,7 +4330,8 @@ final class AXEventHandler: CGSEventDelegate {
 
         let recentNonManaged = hasRecentNonManagedFocus(for: observedEntry.pid)
         let overlayVisible = hasVisibleSamePidOverlayWindow(for: observedEntry)
-        guard recentNonManaged || overlayVisible else { return false }
+        let overlayLifecycleActive = overlayWindowLifecycleActive(for: observedEntry.pid)
+        guard overlayLifecycleActive || overlayVisible else { return false }
 
         controller?.diagnostics.recordRuntimeViewportTrace(
             workspaceId: observedEntry.workspaceId,
@@ -3816,7 +4341,8 @@ final class AXEventHandler: CGSEventDelegate {
                 "source=\(source.rawValue)",
                 "requestDisposition=\(requestDisposition)",
                 "recentNonManaged=\(recentNonManaged)",
-                "overlayVisible=\(overlayVisible)"
+                "overlayVisible=\(overlayVisible)",
+                "overlayLifecycleActive=\(overlayLifecycleActive)"
             ]
         )
 
@@ -4022,15 +4548,12 @@ final class AXEventHandler: CGSEventDelegate {
                 )
             )
         )
-        if overlayCapablePids.contains(pid) {
-            // Sampling moment: an activation event for an overlay-capable pid
-            // is the natural point to observe whether its recognized overlay
-            // is ordered in, keeping `lastOverlayOrderedInByPid` fresh while
-            // the panel is up (e.g. a Cmd+N confirm inside the quick
-            // terminal). The overlay-close guards then still hold when the
-            // panel hides without a destroy.
-            _ = overlayWindowLifecycleActive(for: pid)
-        }
+        // A reusable overlay can be hidden when Nehir starts, so it may never
+        // produce a create/admission event that marks its pid as overlay-capable.
+        // Sample visible same-pid windows before handling every activation; this
+        // discovers the panel while it is ordered in and stamps the lifecycle
+        // before its owner can restore another app during hide.
+        sampleVisibleSamePidOverlayLifecycle(for: pid, source: source)
         // A genuine app-level switch (Dock, Cmd-Tab, launcher activate()) is a
         // user-intent signal that should still admit the app's window even while
         // non-managed focus is active. Window-level focus churn
@@ -4118,6 +4641,23 @@ final class AXEventHandler: CGSEventDelegate {
                 controller.workspaceManager.activeWorkspace(on: monitor.id)?.id == wsId
             } ?? false
 
+            if confirmManagedPointerFocusIntentIfNeeded(
+                entry: entry,
+                isWorkspaceActive: isWorkspaceActive,
+                source: source
+            ) {
+                return
+            }
+
+            if shouldDeferSameAppFocusSuccessionBeforeConfirm(
+                observedEntry: entry,
+                requestDisposition: requestDisposition,
+                source: source,
+                origin: origin
+            ) {
+                return
+            }
+
             if shouldSuppressSameAppParkedFocusBeforeConfirm(
                 observedEntry: entry,
                 workspaceId: wsId,
@@ -4130,6 +4670,7 @@ final class AXEventHandler: CGSEventDelegate {
             if redirectToStableCloseSuccessorFocusBeforeConfirmIfNeeded(
                 observedEntry: entry,
                 workspaceId: wsId,
+                requestDisposition: requestDisposition,
                 source: source
             ) {
                 return
@@ -4261,7 +4802,11 @@ final class AXEventHandler: CGSEventDelegate {
                 return
             }
 
-            if redirectToStableOverlayRecoveryFocusIfNeeded(observedEntry: entry, workspaceId: wsId) {
+            if redirectToStableOverlayRecoveryFocusIfNeeded(
+                observedEntry: entry,
+                workspaceId: wsId,
+                requestDisposition: requestDisposition
+            ) {
                 return
             }
 
@@ -4294,7 +4839,11 @@ final class AXEventHandler: CGSEventDelegate {
                 ) else { return }
             }
 
-            if redirectToStableRecoveryFocusIfNeeded(observedEntry: entry, workspaceId: wsId) {
+            if redirectToStableRecoveryFocusIfNeeded(
+                observedEntry: entry,
+                workspaceId: wsId,
+                requestDisposition: requestDisposition
+            ) {
                 return
             }
 
@@ -4325,6 +4874,16 @@ final class AXEventHandler: CGSEventDelegate {
                 controller.workspaceManager.activeWorkspace(on: monitor.id)?.id == wsId
             } ?? false
 
+            if !appFullscreen,
+               confirmManagedPointerFocusIntentIfNeeded(
+                   entry: restoredEntry,
+                   isWorkspaceActive: isWorkspaceActive,
+                   source: source
+               )
+            {
+                return
+            }
+
             if shouldSuppressSameAppParkedFocusBeforeConfirm(
                 observedEntry: restoredEntry,
                 workspaceId: wsId,
@@ -4337,6 +4896,7 @@ final class AXEventHandler: CGSEventDelegate {
             if redirectToStableCloseSuccessorFocusBeforeConfirmIfNeeded(
                 observedEntry: restoredEntry,
                 workspaceId: wsId,
+                requestDisposition: requestDisposition,
                 source: source
             ) {
                 return
@@ -4441,7 +5001,11 @@ final class AXEventHandler: CGSEventDelegate {
                 return
             }
 
-            if redirectToStableOverlayRecoveryFocusIfNeeded(observedEntry: restoredEntry, workspaceId: wsId) {
+            if redirectToStableOverlayRecoveryFocusIfNeeded(
+                observedEntry: restoredEntry,
+                workspaceId: wsId,
+                requestDisposition: requestDisposition
+            ) {
                 return
             }
 
@@ -4474,7 +5038,11 @@ final class AXEventHandler: CGSEventDelegate {
                 ) else { return }
             }
 
-            if redirectToStableRecoveryFocusIfNeeded(observedEntry: restoredEntry, workspaceId: wsId) {
+            if redirectToStableRecoveryFocusIfNeeded(
+                observedEntry: restoredEntry,
+                workspaceId: wsId,
+                requestDisposition: requestDisposition
+            ) {
                 return
             }
 
@@ -4555,7 +5123,12 @@ final class AXEventHandler: CGSEventDelegate {
         )
         _ = controller.focusBorderController.focusChanged(to: target, forceOrdering: true)
 
-        recordNonManagedFallbackEntered(pid: pid, source: source)
+        recordNonManagedFallbackEntered(
+            pid: pid,
+            source: source,
+            token: token,
+            reason: "focused_unmanaged_window"
+        )
     }
 
     private func admitFocusedWindowBeforeNonManagedFallback(
@@ -4875,14 +5448,17 @@ final class AXEventHandler: CGSEventDelegate {
                     )
                 )
             )
-            let onScreen = isEntryOnScreen(entry)
+            let liveFrame = observedFrame(for: entry)
+            let onScreen = liveFrame.map {
+                Monitor.isFrameOnScreen($0, across: controller.workspaceManager.monitors)
+            } ?? false
             recordFocusRealityCheck(entry: entry, onScreen: onScreen)
             followFocusToParkedWindowWorkspaceIfNeeded(
                 entry: entry,
                 onScreen: onScreen,
+                liveFrame: liveFrame,
                 causelessExternalActivation: causelessExternalConfirmation,
-                previousConfirmedFocusToken: previousConfirmedFocusToken,
-                solicitedByRequest: activeRequest?.token == entry.token
+                previousConfirmedFocusToken: previousConfirmedFocusToken
             )
         } else {
             _ = controller.workspaceManager.setManagedFocus(
@@ -4938,7 +5514,11 @@ final class AXEventHandler: CGSEventDelegate {
             let settleTolerance = 1.0 / max(engine.displayScale(in: wsId), 1.0)
             let isSpringInFlight = state.viewOffsetPixels.isAnimating
                 && abs(state.viewOffsetPixels.current() - state.viewOffsetPixels.target()) > settleTolerance
-            var overlaySignal = (recentNonManaged: hasRecentNonManagedFocus(for: entry.pid), overlayVisible: false)
+            var overlaySignal = SameAppOverlayRecoverySignal(
+                recentNonManaged: hasRecentNonManagedFocus(for: entry.pid),
+                overlayVisible: false,
+                lifecycleActive: overlayWindowLifecycleActive(for: entry.pid)
+            )
             var closeRecoveryPins = sameAppCloseRecoveryViewportPins(
                 entry: entry,
                 wsId: wsId,
@@ -4970,14 +5550,13 @@ final class AXEventHandler: CGSEventDelegate {
                 preserveActiveViewportReason = .alreadyConfirmedFocusedWindowChanged
             } else if closeRecoveryPins.shouldPin {
                 preserveActiveViewportReason = .closeRecoveryPin
-            } else if causelessExternalConfirmation, crossPidOverlayLifecycleActive(excluding: entry.pid) {
-                // An overlay owner's "restore the previous app" call during its
-                // close. The confirmation itself stands (focus reality), but
-                // scrolling the viewport to the restored column and back once
-                // the overlay-close anchor assert corrects focus is the
-                // observed round-trip jump — and a resize issued inside that
-                // round trip lands on a half-revealed column. Selection still
-                // commits; only the viewport motion is suppressed.
+            } else if causelessExternalConfirmation, crossPidOverlayRestoreMayBePending(excluding: entry.pid) {
+                // An overlay owner's "restore the previous app" call can arrive
+                // after orderOut but before the overlay's destroy. The confirmation
+                // itself stands (focus reality), but scrolling to the restored
+                // column and back once the destroy-time anchor assert runs is the
+                // observed round-trip jump. After destroy, this guard is inactive so
+                // a later Cmd-Tab or Dock activation reveals its target immediately.
                 preserveActiveViewportReason = .causelessExternalOverlayClose
             } else {
                 preserveActiveViewportReason = .none
@@ -5001,6 +5580,7 @@ final class AXEventHandler: CGSEventDelegate {
                     "selectedSameAppFocusDisappearedPin=\(selectedSameAppFocusDisappearedPin)",
                     "recentNonManaged=\(overlaySignal.recentNonManaged)",
                     "overlayVisible=\(overlaySignal.overlayVisible)",
+                    "overlayLifecycleActive=\(overlaySignal.lifecycleActive)",
                     "wasAlreadyConfirmedFocus=\(wasAlreadyConfirmedFocus)",
                     "isGesture=\(state.viewOffsetPixels.isGesture)",
                     "wasAnimating=\(state.viewOffsetPixels.isAnimating)"
@@ -5623,6 +6203,22 @@ final class AXEventHandler: CGSEventDelegate {
         }
     }
 
+    private func hasStableWindowServerInfo(
+        _ windowInfo: WindowServerInfo?,
+        for token: WindowToken
+    ) -> Bool {
+        guard let windowInfo,
+              let tokenWindowId = UInt32(exactly: token.windowId),
+              pid_t(windowInfo.pid) == token.pid,
+              windowInfo.id == tokenWindowId,
+              !windowInfo.frame.isNull,
+              !windowInfo.frame.isEmpty
+        else {
+            return false
+        }
+        return true
+    }
+
     private func prepareCreateCandidate(
         windowId: UInt32,
         windowInfo: WindowServerInfo?,
@@ -5700,6 +6296,26 @@ final class AXEventHandler: CGSEventDelegate {
             discardCreatePlacementContext(windowId: windowId)
             return nil
         }
+        // AX focus and the CGS create event can both precede WindowServer's
+        // finalized parent, tags, and geometry. Admitting from that placeholder
+        // record lets a parented popup look like a top-level floating window,
+        // after which reevaluation demotes it and focus recovery dismisses it.
+        // Wait for one coherent WindowServer record before making any managed
+        // admission decision; the bounded create retry owns that stabilization.
+        guard hasStableWindowServerInfo(windowInfo, for: token) else {
+            recordPrepareCreateRejection(
+                windowId: windowId,
+                token: token,
+                context: traceContext,
+                reason: .unstableWindowServerInfo,
+                windowInfo: windowInfo,
+                fallbackToken: fallbackToken,
+                fallbackAXRef: fallbackAXRef,
+                createPlacementContext: createPlacementContext
+            )
+            _ = scheduleCreatedWindowInfoRetryIfNeeded(windowId: windowId)
+            return nil
+        }
 
         let resolvedAXRef = if fallbackAXRef?.windowId == Int(windowId) {
             fallbackAXRef
@@ -5746,15 +6362,11 @@ final class AXEventHandler: CGSEventDelegate {
             decision: evaluation.decision,
             existingEntry: nil
         )
-
-        if trackedMode == nil {
+        guard let trackedMode else {
             scheduleWindowStabilizationRetryIfNeeded(
                 token: token,
                 decision: evaluation.decision
             )
-        }
-
-        guard let trackedMode else {
             recordPrepareCreateRejection(
                 windowId: windowId,
                 token: token,
@@ -5925,7 +6537,12 @@ final class AXEventHandler: CGSEventDelegate {
            reason == .untrackedDecision || reason == .missingAXRef,
            isKnownSamePidOverlayWindow(windowInfo, pid: token.pid)
         {
-            recordRecentNonManagedFocus(pid: token.pid)
+            recordRecentNonManagedFocus(
+                pid: token.pid,
+                origin: "known_overlay_create_rejected:\(reason.rawValue)",
+                token: token,
+                source: nil
+            )
         }
 
         recordNiriCreateFocusTrace(
@@ -6265,8 +6882,14 @@ final class AXEventHandler: CGSEventDelegate {
         controller.clearKeyboardFocusTarget(matching: target.token)
     }
 
-    private func processPreparedDestroy(_ candidate: PreparedDestroy) {
-        handleRemoved(token: candidate.token)
+    private func processPreparedDestroy(
+        _ candidate: PreparedDestroy,
+        settledReplacementKey: ManagedReplacementKey? = nil
+    ) {
+        handleRemoved(
+            token: candidate.token,
+            settledReplacementKey: settledReplacementKey
+        )
     }
 
     /// Terminal step for a deferred destroy-liveness verification that decided
@@ -6375,7 +6998,7 @@ final class AXEventHandler: CGSEventDelegate {
             // column and produced the transient jump. For a genuinely new
             // window the audit finds every entry alive and schedules nothing,
             // and the admission proceeds on its normal deadline.
-            auditPidWindowLiveness(for: key)
+            auditPidWindowLiveness(for: key, trigger: "create_without_destroy")
         }
     }
 
@@ -6442,20 +7065,25 @@ final class AXEventHandler: CGSEventDelegate {
         let orderedCreates = burst.creates.sorted { $0.sequence < $1.sequence }
 
         for destroy in orderedDestroys {
-            for create in orderedCreates
-                where !claimedCreateSequences.contains(create.sequence)
-                && destroy.candidate.token != create.candidate.token
-                && managedReplacementMetadataMatches(
-                    oldToken: destroy.candidate.token,
-                    old: destroy.candidate.replacementMetadata,
-                    new: create.candidate.replacementMetadata,
-                    newFacts: nil
-                )
-            {
-                pairs.append(MatchedManagedReplacementPair(destroy: destroy, create: create))
-                claimedCreateSequences.insert(create.sequence)
-                break
+            let compatibleCreates = orderedCreates.filter { create in
+                !claimedCreateSequences.contains(create.sequence)
+                    && destroy.candidate.token != create.candidate.token
+                    && managedReplacementMetadataMatches(
+                        oldToken: destroy.candidate.token,
+                        old: destroy.candidate.replacementMetadata,
+                        new: create.candidate.replacementMetadata,
+                        newFacts: nil
+                    )
             }
+            guard let create = compatibleCreates.first else { continue }
+            pairs.append(
+                MatchedManagedReplacementPair(
+                    destroy: destroy,
+                    create: create,
+                    compatibleCreateTokens: compatibleCreates.map(\.candidate.token)
+                )
+            )
+            claimedCreateSequences.insert(create.sequence)
         }
 
         return pairs
@@ -6514,8 +7142,276 @@ final class AXEventHandler: CGSEventDelegate {
                         metadataSummary: managedReplacementMetadataSummary(destroy.candidate.replacementMetadata)
                     )
                 )
-                processPreparedDestroy(destroy.candidate)
+                processPreparedDestroy(
+                    destroy.candidate,
+                    settledReplacementKey: key
+                )
             }
+        }
+    }
+
+    private func recordManagedReplacementFocusReconciliation(
+        for key: ManagedReplacementKey,
+        phase: String,
+        details: [String] = []
+    ) {
+        controller?.diagnostics.recordRuntimeViewportTrace(
+            workspaceId: key.workspaceId,
+            reason: "replacement_focus_reconcile_\(phase)",
+            details: [
+                "uptimeMs=\(traceUptimeMs())",
+                "pid=\(key.pid)"
+            ] + details
+        )
+    }
+
+    private func managedReplacementFocusReconciliationSkipReason(
+        for key: ManagedReplacementKey
+    ) -> String? {
+        guard let controller else { return "missing_controller" }
+        let workspaceManager = controller.workspaceManager
+
+        if pendingManagedReplacementBursts[key] != nil || pendingManagedReplacementTasks[key] != nil {
+            return "replacement_burst_pending"
+        }
+        if workspaceManager.activeFocusRequestToken != nil
+            || controller.focusBridge.activeManagedRequest != nil
+        {
+            return "newer_managed_focus_request"
+        }
+        if workspaceManager.isNonManagedFocusActive {
+            return "non_managed_focus_active"
+        }
+        guard let confirmedToken = workspaceManager.confirmedManagedFocusToken else {
+            return "missing_confirmed_focus"
+        }
+        guard confirmedToken.pid == key.pid else {
+            return "confirmed_focus_other_pid"
+        }
+        guard workspaceManager.entry(for: confirmedToken)?.workspaceId == key.workspaceId else {
+            return "confirmed_focus_other_workspace"
+        }
+        guard let monitorId = workspaceManager.monitorId(for: key.workspaceId),
+              workspaceManager.activeWorkspace(on: monitorId)?.id == key.workspaceId
+        else {
+            return "workspace_inactive"
+        }
+        return nil
+    }
+
+    private func managedReplacementFocusReconciliationTarget(
+        for key: ManagedReplacementKey
+    ) -> ReplacementFocusTarget? {
+        guard let controller,
+              let token = controller.workspaceManager.confirmedManagedFocusToken,
+              let engine = controller.niriEngine,
+              let node = engine.findNode(for: token),
+              let column = engine.column(of: node),
+              let columnIndex = engine.columnIndex(of: column, in: key.workspaceId),
+              let monitor = controller.workspaceManager.monitor(for: key.workspaceId)
+        else {
+            return nil
+        }
+        return ReplacementFocusTarget(
+            token: token,
+            engine: engine,
+            node: node,
+            columnIndex: columnIndex,
+            monitor: monitor,
+            state: controller.workspaceManager.niriViewportState(for: key.workspaceId)
+        )
+    }
+
+    /// Replacement bursts may have to replay surplus creates as real windows.
+    /// If later destroy-only cleanup proves those identities transient, removal
+    /// preserves the viewport's world-space position while deleting their columns.
+    /// Reconcile the surviving confirmed focus only after that removal layout has
+    /// committed, so selection and active-column bookkeeping point at the live node
+    /// and automatic reveal runs against the final column set.
+    private func reconcileFocusAfterSettledManagedReplacementRemoval(
+        for key: ManagedReplacementKey
+    ) {
+        if let skipReason = managedReplacementFocusReconciliationSkipReason(for: key) {
+            recordManagedReplacementFocusReconciliation(
+                for: key,
+                phase: "skipped",
+                details: ["skipReason=\(skipReason)"]
+            )
+            return
+        }
+        guard var target = managedReplacementFocusReconciliationTarget(for: key) else {
+            recordManagedReplacementFocusReconciliation(
+                for: key,
+                phase: "skipped",
+                details: ["skipReason=missing_layout_target"]
+            )
+            return
+        }
+
+        let isFFMFocus = target.state.pendingFFMFocusToken == target.token
+            || target.state.recentFFMFocusToken == target.token
+        guard !target.state.viewOffsetPixels.isGesture, !isFFMFocus else {
+            recordManagedReplacementFocusReconciliation(
+                for: key,
+                phase: "skipped",
+                details: [
+                    "skipReason=\(target.state.viewOffsetPixels.isGesture ? "gesture_active" : "focus_follows_mouse")",
+                    "token=\(target.token)"
+                ]
+            )
+            return
+        }
+        performManagedReplacementFocusReconciliation(for: key, target: &target)
+    }
+
+    private func performManagedReplacementFocusReconciliation(
+        for key: ManagedReplacementKey,
+        target: inout ReplacementFocusTarget
+    ) {
+        guard let controller else { return }
+        let gap = controller.gapSize(for: target.monitor)
+        let workingFrame = controller.insetWorkingFrame(for: target.monitor)
+        let columns = target.engine.columns(in: key.workspaceId)
+        let context = target.engine.makeViewportSnapContext(
+            columns: columns,
+            state: target.state,
+            workingFrame: workingFrame,
+            gaps: gap,
+            intentionallyDoesNotFillViewport: target.engine.loneWindowIntentionallyDoesNotFillViewport(
+                in: key.workspaceId
+            )
+        )
+        let visibilityBefore = context.visibility(
+            of: target.columnIndex,
+            viewportOffset: context.currentViewStart(in: target.state),
+            in: target.state
+        )
+        let selectedTokenBefore = target.state.selectedNodeId
+            .flatMap { target.engine.findNode(by: $0) as? NiriWindow }?
+            .token
+        let preferredFocusBefore = controller.workspaceManager.preferredWorkspaceFocusToken(in: key.workspaceId)
+        recordManagedReplacementFocusReconciliation(
+            for: key,
+            phase: "candidate",
+            details: [
+                "token=\(target.token)",
+                "selectedTokenBefore=\(selectedTokenBefore.map(String.init(describing:)) ?? "nil")",
+                "preferredFocusBefore=\(preferredFocusBefore.map(String.init(describing:)) ?? "nil")",
+                "targetColumnIndex=\(target.columnIndex)",
+                "visibilityBefore=\(visibilityBefore)"
+            ]
+        )
+        applyManagedReplacementFocusReconciliation(
+            for: key,
+            target: &target,
+            inputs: .init(
+                gap: gap,
+                workingFrame: workingFrame,
+                columns: columns,
+                rememberedFocusChanged: preferredFocusBefore != target.token
+            )
+        )
+    }
+
+    private func applyManagedReplacementFocusReconciliation(
+        for key: ManagedReplacementKey,
+        target: inout ReplacementFocusTarget,
+        inputs: ReplacementFocusInputs
+    ) {
+        guard let controller else { return }
+        let selectedNodeChanged = target.state.selectedNodeId != target.node.id
+        let activeColumnChanged = target.state.activeColumnIndex != target.columnIndex
+        let targetViewStartBefore = target.state.targetViewPosPixels(
+            columns: inputs.columns,
+            gap: inputs.gap
+        )
+        target.engine.activateWindow(target.node.id)
+        target.state.selectedNodeId = target.node.id
+        let orientation = target.engine.monitor(for: target.monitor.id)?.orientation
+            ?? controller.settings.effectiveOrientation(for: target.monitor)
+        target.engine.ensureSelectionVisible(
+            node: target.node,
+            in: key.workspaceId,
+            motion: controller.motionPolicy.snapshot(),
+            state: &target.state,
+            workingFrame: inputs.workingFrame,
+            gaps: inputs.gap,
+            orientation: orientation,
+            revealTrigger: .automatic
+        )
+        let targetViewStartAfter = target.state.targetViewPosPixels(
+            columns: inputs.columns,
+            gap: inputs.gap
+        )
+        let pixel = 1.0 / max(target.engine.displayScale(in: key.workspaceId), 1.0)
+        let didReveal = abs(targetViewStartAfter - targetViewStartBefore) > pixel
+        commitManagedReplacementFocusReconciliation(
+            for: key,
+            target: target,
+            inputs: inputs,
+            result: .init(
+                selectedNodeChanged: selectedNodeChanged,
+                activeColumnChanged: activeColumnChanged,
+                targetViewStartBefore: targetViewStartBefore,
+                targetViewStartAfter: targetViewStartAfter,
+                didReveal: didReveal,
+                layoutChanged: selectedNodeChanged || activeColumnChanged || didReveal
+            )
+        )
+    }
+
+    private func commitManagedReplacementFocusReconciliation(
+        for key: ManagedReplacementKey,
+        target: ReplacementFocusTarget,
+        inputs: ReplacementFocusInputs,
+        result: ReplacementFocusResult
+    ) {
+        guard let controller else { return }
+        _ = controller.workspaceManager.applySessionPatch(
+            .init(
+                workspaceId: key.workspaceId,
+                viewportState: target.state,
+                rememberedFocusToken: target.token
+            )
+        )
+        recordManagedReplacementFocusReconciliation(
+            for: key,
+            phase: "result",
+            details: [
+                "token=\(target.token)",
+                "targetColumnIndex=\(target.columnIndex)",
+                "selectedNodeChanged=\(result.selectedNodeChanged)",
+                "activeColumnChanged=\(result.activeColumnChanged)",
+                "rememberedFocusChanged=\(inputs.rememberedFocusChanged)",
+                String(format: "targetViewStartBefore=%.1f", result.targetViewStartBefore),
+                String(format: "targetViewStartAfter=%.1f", result.targetViewStartAfter),
+                "didReveal=\(result.didReveal)",
+                "layoutChanged=\(result.layoutChanged)"
+            ]
+        )
+        finishManagedReplacementFocusReconciliation(
+            for: key,
+            state: target.state,
+            layoutChanged: result.layoutChanged,
+            rememberedFocusChanged: inputs.rememberedFocusChanged
+        )
+    }
+
+    private func finishManagedReplacementFocusReconciliation(
+        for key: ManagedReplacementKey,
+        state: ViewportState,
+        layoutChanged: Bool,
+        rememberedFocusChanged: Bool
+    ) {
+        guard let controller, layoutChanged || rememberedFocusChanged else { return }
+        controller.requestWorkspaceProjectionRefresh(reason: "replacementFocusReconciled")
+        guard layoutChanged else { return }
+        controller.layoutRefreshController.requestRefresh(
+            reason: .layoutCommand,
+            affectedWorkspaceIds: [key.workspaceId]
+        )
+        if state.viewOffsetPixels.isAnimating {
+            controller.layoutRefreshController.startScrollAnimation(for: key.workspaceId)
         }
     }
 
@@ -6768,6 +7664,47 @@ final class AXEventHandler: CGSEventDelegate {
         return Monitor.isFrameOnScreen(frame, across: controller.workspaceManager.monitors)
     }
 
+    private func parkedFocusVisibilityTraceDetails(
+        entry: WindowModel.Entry,
+        onScreen: Bool,
+        liveFrame: CGRect?,
+        workspaceActive: Bool
+    ) -> [String] {
+        var details = [
+            "onScreen=\(onScreen)",
+            "workspaceActive=\(workspaceActive)",
+            "liveFrame=\(liveFrame.map { LayoutTrace.rect($0) } ?? "nil")"
+        ]
+        guard let controller,
+              let engine = controller.niriEngine,
+              let node = engine.findNode(for: entry.handle),
+              let column = engine.column(of: node),
+              let columnIndex = engine.columnIndex(of: column, in: entry.workspaceId),
+              let monitor = controller.workspaceManager.monitor(for: entry.workspaceId)
+        else {
+            details.append("niriVisibility=unavailable")
+            return details
+        }
+
+        let state = controller.workspaceManager.niriViewportState(for: entry.workspaceId)
+        let gap = controller.gapSize(for: monitor)
+        let context = engine.makeViewportSnapContext(
+            columns: engine.columns(in: entry.workspaceId),
+            state: state,
+            workingFrame: controller.insetWorkingFrame(for: monitor),
+            gaps: gap,
+            intentionallyDoesNotFillViewport: engine.loneWindowIntentionallyDoesNotFillViewport(
+                in: entry.workspaceId
+            )
+        )
+        let viewStart = context.currentViewStart(in: state)
+        details.append("niriColumnIndex=\(columnIndex)")
+        details.append("niriActiveColumnIndex=\(state.activeColumnIndex)")
+        details.append("niriVisibility=\(context.visibility(of: columnIndex, viewportOffset: viewStart, in: state))")
+        details.append(String(format: "niriViewStart=%.1f", viewStart))
+        return details
+    }
+
     /// After a same-app focus switch, Nehir can end up with focus on one of the
     /// app's windows that is parked off-screen (its workspace not actually
     /// rendered), so nothing appears and the user has to reveal it by hand. If
@@ -6785,9 +7722,9 @@ final class AXEventHandler: CGSEventDelegate {
     private func followFocusToParkedWindowWorkspaceIfNeeded(
         entry: WindowModel.Entry,
         onScreen: Bool,
+        liveFrame: CGRect?,
         causelessExternalActivation: Bool = false,
-        previousConfirmedFocusToken: WindowToken? = nil,
-        solicitedByRequest: Bool = false
+        previousConfirmedFocusToken: WindowToken? = nil
     ) {
         guard let controller else { return }
         let manager = controller.workspaceManager
@@ -6795,15 +7732,40 @@ final class AXEventHandler: CGSEventDelegate {
         recentParkedFocusFollowByToken = recentParkedFocusFollowByToken.filter {
             now - $0.value <= Self.parkedFocusFollowDedupTTL
         }
+        let entryWorkspaceActive = manager.monitorId(for: entry.workspaceId)
+            .flatMap { manager.activeWorkspace(on: $0)?.id } == entry.workspaceId
+        let closeRecoveryWindow = isWithinSameAppCloseRecoveryWindow(pid: entry.pid)
+        let crossPidOverlayRestorePending = causelessExternalActivation
+            && crossPidOverlayRestoreMayBePending(excluding: entry.pid)
+        let visibilityDetails = parkedFocusVisibilityTraceDetails(
+            entry: entry,
+            onScreen: onScreen,
+            liveFrame: liveFrame,
+            workspaceActive: entryWorkspaceActive
+        )
+        controller.diagnostics.recordRuntimeViewportTrace(
+            workspaceId: entry.workspaceId,
+            reason: "follow_parked_evaluation",
+            details: [
+                "token=\(entry.token)",
+                "mode=\(entry.mode)",
+                "closeRecoveryWindow=\(closeRecoveryWindow)",
+                "recentSameAppClose=\(hasRecentSameAppWindowClose(for: entry.pid))",
+                "recentSameAppCloseAgeMs=\(recentSameAppCloseAgeMs(for: entry.pid))",
+                "causelessExternalActivation=\(causelessExternalActivation)",
+                "crossPidOverlayRestorePending=\(crossPidOverlayRestorePending)",
+                "previousConfirmedFocus=\(previousConfirmedFocusToken.map(String.init(describing:)) ?? "nil")"
+            ] + recentNonManagedFocusTraceDetails(for: entry.pid) + visibilityDetails
+        )
         // During close recovery, parked-follow would chase the offscreen same-app successor we are trying to ignore.
-        if isWithinSameAppCloseRecoveryWindow(pid: entry.pid) {
+        if closeRecoveryWindow {
             controller.diagnostics.recordRuntimeViewportTrace(
                 workspaceId: entry.workspaceId,
                 reason: "close_recovery_follow_parked_skip",
                 details: [
                     "token=\(entry.token)",
                     "skipReason=close_recovery_window"
-                ]
+                ] + recentNonManagedFocusTraceDetails(for: entry.pid) + visibilityDetails
             )
             recordNiriCreateFocusTrace(
                 .init(
@@ -6826,9 +7788,15 @@ final class AXEventHandler: CGSEventDelegate {
         // was tried here and reverted: transient hidden states on ordinary
         // mid-animation windows made follow fire spuriously, and the holds it
         // armed then blocked genuine Cmd+` and menu switches.)
-        let entryWorkspaceActive = manager.monitorId(for: entry.workspaceId)
-            .flatMap { manager.activeWorkspace(on: $0)?.id } == entry.workspaceId
         if onScreen, entryWorkspaceActive {
+            controller.diagnostics.recordRuntimeViewportTrace(
+                workspaceId: entry.workspaceId,
+                reason: "follow_parked_skip",
+                details: [
+                    "token=\(entry.token)",
+                    "skipReason=on_screen_active_workspace"
+                ] + visibilityDetails
+            )
             recordNiriCreateFocusTrace(
                 .init(
                     kind: .followFocusToParkedWindow(
@@ -6896,16 +7864,14 @@ final class AXEventHandler: CGSEventDelegate {
             )
             return
         }
-        // An overlay owner's own "restore the previous app" call arrives as a
-        // cause-less app-level activation while its overlay is closing.
+        // An overlay owner's own "restore the previous app" call can arrive as
+        // a cause-less app-level activation after orderOut but before destroy.
         // Committing a workspace switch for it schedules a deferred
         // focusWindow(reason: .activateWorkspace) that fires *after* the
-        // overlay-close anchor assert and stomps its correction — the
-        // observed #184 rollback. A genuine Cmd-Tab outside an overlay-close
-        // moment carries no live cross-pid overlay and is unaffected; inside
-        // one, only the automatic workspace switch is skipped — the focus
-        // confirmation itself already happened.
-        if causelessExternalActivation, crossPidOverlayLifecycleActive(excluding: entry.pid) {
+        // destroy-time anchor assert and stomps its correction — the observed
+        // #184 rollback. Suppression ends when destroy is processed; a later
+        // Cmd-Tab or Dock activation is fresh user intent and must follow.
+        if crossPidOverlayRestorePending {
             recordNiriCreateFocusTrace(
                 .init(
                     kind: .followFocusToParkedWindow(
@@ -6915,68 +7881,6 @@ final class AXEventHandler: CGSEventDelegate {
                     )
                 )
             )
-            return
-        }
-        // An app that closes its focused window may natively focus another of
-        // its windows BEFORE any destroy signal for the closed one reaches
-        // Nehir (Ghostty's AX destroy has been observed arriving ~500 ms after
-        // the successor's focus change), so close evidence cannot gate this
-        // switch — it does not exist yet. The distinguishing fact is the
-        // previous window's liveness: for an unsolicited same-pid switch the
-        // reveal commits only after one AX enumeration confirms the previous
-        // focus is still alive. If it is gone, this switch is close
-        // succession — the reveal is skipped and the close evidence armed for
-        // the recovery gates. A genuine same-app window jump costs one
-        // enumeration round trip before its reveal.
-        if !solicitedByRequest,
-           let previousToken = previousConfirmedFocusToken,
-           previousToken != entry.token,
-           previousToken.pid == entry.pid
-        {
-            recordNiriCreateFocusTrace(
-                .init(
-                    kind: .followFocusToParkedWindow(
-                        token: entry.token,
-                        workspaceId: entry.workspaceId,
-                        decision: "probe reason=same_pid_succession prev=\(previousToken)"
-                    )
-                )
-            )
-            Task { @MainActor [weak self] in
-                guard let self, let controller = self.controller else { return }
-                let enumeration = await controller.axManager.windowEnumerationForPID(entry.pid)
-                guard controller.workspaceManager.confirmedManagedFocusToken == entry.token else {
-                    self.recordNiriCreateFocusTrace(
-                        .init(
-                            kind: .followFocusToParkedWindow(
-                                token: entry.token,
-                                workspaceId: entry.workspaceId,
-                                decision: "skip reason=probe_stale_confirmation"
-                            )
-                        )
-                    )
-                    return
-                }
-                if case .success(let windows) = enumeration,
-                   !windows.contains(where: { _, pid, enumeratedWindowId in
-                       pid == previousToken.pid && enumeratedWindowId == previousToken.windowId
-                   })
-                {
-                    self.recordRecentSameAppWindowClose(pid: entry.pid)
-                    self.recordRecentSameAppTeardown(pid: entry.pid)
-                    self.recordNiriCreateFocusTrace(
-                        .init(
-                            kind: .followFocusToParkedWindow(
-                                token: entry.token,
-                                workspaceId: entry.workspaceId,
-                                decision: "skip reason=same_pid_close_succession prev=\(previousToken)"
-                            )
-                        )
-                    )
-                    return
-                }
-                self.commitFollowSwitchToParkedWindow(entry: entry)
-            }
             return
         }
         commitFollowSwitchToParkedWindow(entry: entry)
@@ -7016,7 +7920,17 @@ final class AXEventHandler: CGSEventDelegate {
     }
 
     private func recentNonManagedFocusAgeMs(for pid: pid_t) -> String {
-        traceAgeMs(since: recentNonManagedFocusByPid[pid])
+        traceAgeMs(since: recentNonManagedFocusByPid[pid]?.recordedAt)
+    }
+
+    private func recentNonManagedFocusTraceDetails(for pid: pid_t) -> [String] {
+        let evidence = recentNonManagedFocusEvidence(for: pid)
+        return [
+            "recentNonManagedFocusAgeMs=\(recentNonManagedFocusAgeMs(for: pid))",
+            "recentNonManagedOrigin=\(evidence?.origin ?? "nil")",
+            "recentNonManagedToken=\(evidence?.token.map(String.init(describing:)) ?? "nil")",
+            "recentNonManagedSource=\(evidence?.source?.rawValue ?? "nil")"
+        ]
     }
 
     private func focusedWindowLossPrecursorAgeMs(for pid: pid_t) -> String {
@@ -7026,6 +7940,16 @@ final class AXEventHandler: CGSEventDelegate {
     private func activeRecoveryRemainingMs() -> String {
         guard let context = windowCloseFocusRecoveryContext else { return "nil" }
         return String(Int(context.expiresAt.timeIntervalSinceNow * 1000))
+    }
+
+    private func overlayCloseAnchorAction(
+        canAdoptFocusedAnchor: Bool,
+        internalAnchorAlreadyActive: Bool
+    ) -> String {
+        if canAdoptFocusedAnchor {
+            return "adopt_focused_anchor"
+        }
+        return internalAnchorAlreadyActive ? "noop" : "request_anchor"
     }
 
     /// An overlay closing is an unambiguous, Nehir-observable moment — the only
@@ -7116,6 +8040,17 @@ final class AXEventHandler: CGSEventDelegate {
             anchorToken = confirmedToken
         }
 
+        let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let frontmostFocusedToken = frontmostPid.flatMap { focusedWindowToken(for: $0) }
+        let canAdoptFocusedAnchor = frontmostPid == anchorToken.pid
+            && frontmostFocusedToken == anchorToken
+        let internalAnchorAlreadyActive = anchorToken == confirmedToken
+            && controller.currentBorderTarget()?.token == anchorToken
+        let action = overlayCloseAnchorAction(
+            canAdoptFocusedAnchor: canAdoptFocusedAnchor,
+            internalAnchorAlreadyActive: internalAnchorAlreadyActive
+        )
+
         controller.diagnostics.recordRuntimeViewportTrace(
             workspaceId: confirmedEntry.workspaceId,
             reason: "overlay_close_anchor_asserted",
@@ -7125,12 +8060,33 @@ final class AXEventHandler: CGSEventDelegate {
                 "anchor=\(anchorToken)",
                 "confirmedFocus=\(confirmedToken)",
                 "anchorSource=\(anchorToken == confirmedToken ? "confirmed" : "explicit_stamp")",
-                "nonManagedFocusActive=\(controller.workspaceManager.isNonManagedFocusActive)"
+                "nonManagedFocusActive=\(controller.workspaceManager.isNonManagedFocusActive)",
+                "frontmostPid=\(frontmostPid.map(String.init) ?? "nil")",
+                "frontmostFocusedToken=\(frontmostFocusedToken.map(String.init(describing:)) ?? "nil")",
+                "action=\(action)"
             ]
         )
-        guard anchorToken != confirmedToken || controller.currentBorderTarget()?.token != anchorToken else {
+        if canAdoptFocusedAnchor,
+           let anchorEntry = controller.workspaceManager.entry(for: anchorToken)
+        {
+            // The overlay-owner process is frontmost and AX already reports the
+            // chosen anchor. Restore Nehir's managed-focus state directly rather
+            // than issuing a redundant native focus request; refocusing an
+            // already-focused Ghostty window can make Ghostty cycle to its peer.
+            let appFullscreen = isFullscreenProvider?(anchorEntry.axRef)
+                ?? AXWindowService.isFullscreen(anchorEntry.axRef)
+            handleManagedAppActivation(
+                entry: anchorEntry,
+                isWorkspaceActive: true,
+                appFullscreen: appFullscreen,
+                source: .focusedWindowChanged,
+                confirmRequest: true,
+                origin: .probe
+            )
+            endWindowCloseFocusRecovery(matching: anchorEntry.workspaceId)
             return
         }
+        guard !internalAnchorAlreadyActive else { return }
         controller.focusWindow(anchorToken, reason: .overlayCloseAnchorAssert)
     }
 
@@ -7167,25 +8123,49 @@ final class AXEventHandler: CGSEventDelegate {
         }
     }
 
-    private func recordRecentNonManagedFocus(pid: pid_t) {
+    private func recordRecentNonManagedFocus(
+        pid: pid_t,
+        origin: String,
+        token: WindowToken?,
+        source: ActivationEventSource?
+    ) {
         pruneRecentNonManagedFocus()
-        recentNonManagedFocusByPid[pid] = managedReplacementCurrentUptime()
+        recentNonManagedFocusByPid[pid] = .init(
+            recordedAt: managedReplacementCurrentUptime(),
+            origin: origin,
+            token: token,
+            source: source
+        )
+    }
+
+    private func recentNonManagedFocusEvidence(for pid: pid_t) -> RecentNonManagedFocusEvidence? {
+        pruneRecentNonManagedFocus()
+        return recentNonManagedFocusByPid[pid]
     }
 
     private func hasRecentNonManagedFocus(for pid: pid_t) -> Bool {
-        pruneRecentNonManagedFocus()
-        return recentNonManagedFocusByPid[pid] != nil
+        recentNonManagedFocusEvidence(for: pid) != nil
     }
 
     private func pruneRecentNonManagedFocus(now: TimeInterval? = nil) {
         let now = now ?? managedReplacementCurrentUptime()
-        recentNonManagedFocusByPid = recentNonManagedFocusByPid.filter { _, recordedAt in
-            now - recordedAt <= Self.recentNonManagedFocusTTL
+        recentNonManagedFocusByPid = recentNonManagedFocusByPid.filter { _, evidence in
+            now - evidence.recordedAt <= Self.recentNonManagedFocusTTL
         }
     }
 
-    private func recordNonManagedFallbackEntered(pid: pid_t, source: ActivationEventSource) {
-        recordRecentNonManagedFocus(pid: pid)
+    private func recordNonManagedFallbackEntered(
+        pid: pid_t,
+        source: ActivationEventSource,
+        token: WindowToken?,
+        reason: String
+    ) {
+        recordRecentNonManagedFocus(
+            pid: pid,
+            origin: reason,
+            token: token,
+            source: source
+        )
         recordNiriCreateFocusTrace(
             .init(
                 kind: .nonManagedFallbackEntered(
@@ -7223,25 +8203,26 @@ final class AXEventHandler: CGSEventDelegate {
     }
 
     private func isWithinSameAppCloseRecoveryWindow(pid: pid_t) -> Bool {
-        hasRecentNonManagedFocus(for: pid) || hasRecentSameAppWindowClose(for: pid)
+        hasRecentSameAppWindowClose(for: pid) || overlayWindowLifecycleActive(for: pid)
     }
 
-    /// Whether `pid`'s recognized overlay (e.g. the Ghostty quick terminal) is
-    /// in an active lifecycle window: one of its recognized overlay windows
-    /// still resolves in the WindowServer (open, or hiding ahead of its
-    /// destroy notification), or that destroy was observed within the
-    /// same-app close-recovery window. This — not pid-level teardown
-    /// evidence — is what scopes overlay-teardown protections to moments an
-    /// overlay can actually cause: pid-level evidence proved far too broad,
-    /// as ordinary tab churn kept refreshing it for ten seconds at a time
-    /// with the overlay itself long gone.
-    private func overlayWindowLifecycleActive(for pid: pid_t) -> Bool {
-        guard overlayCapablePids.contains(pid) else { return false }
+    private enum OverlayLifecyclePhase: Equatable {
+        case inactive
+        case beforeDestroy
+        case recentlyDestroyed
+    }
+
+    /// The lifecycle phase of `pid`'s recognized overlay (e.g. the Ghostty
+    /// quick terminal). `beforeDestroy` covers both ordered-in and just-hidden
+    /// panels whose owner may still restore the previously frontmost app.
+    /// `recentlyDestroyed` keeps same-app close recovery active after the
+    /// unambiguous destroy signal, but must not suppress a later user app
+    /// switch: the close-anchor correction has already run by then.
+    private func overlayLifecyclePhase(for pid: pid_t) -> OverlayLifecyclePhase {
+        guard overlayCapablePids.contains(pid) else { return .inactive }
         let now = managedReplacementCurrentUptime()
-        if let destroyedAt = recentRecognizedOverlayDestroyByPid[pid],
-           now - destroyedAt <= Self.recentSameAppWindowCloseTTL
-        {
-            return true
+        let recentDestroy = recentRecognizedOverlayDestroyByPid[pid].flatMap { destroyedAt in
+            now - destroyedAt <= Self.recentSameAppWindowCloseTTL ? destroyedAt : nil
         }
         if let windowIds = recognizedOverlayWindowIdsByPid[pid] {
             let orderedInNow = windowIds.contains { windowId in
@@ -7255,36 +8236,81 @@ final class AXEventHandler: CGSEventDelegate {
                 // app's whole lifetime — observed as destroy suppression
                 // firing during ordinary tab churn with the overlay long
                 // dismissed. A panel is a *live* overlay only while it is
-                // actually ordered in; an unresolvable ordering query (nil)
-                // conservatively counts as ordered in.
-                return SkyLight.shared.isWindowOrderedIn(queryId) != false
+                // actually ordered in. Before destroy, an unavailable ordering
+                // query is treated conservatively as ordered in; an observed
+                // destroy is authoritative until WindowServer reports the panel
+                // ordered in again.
+                let orderedIn = if let windowOrderedInProvider {
+                    windowOrderedInProvider(queryId)
+                } else {
+                    SkyLight.shared.isWindowOrderedIn(queryId)
+                }
+                return orderedIn == true || (orderedIn == nil && recentDestroy == nil)
             }
             if orderedInNow {
                 lastOverlayOrderedInByPid[pid] = now
-                return true
+                return .beforeDestroy
             }
         }
-        // A quick-terminal hide is orderOut without a destroy: the panel
-        // flips to not-ordered-in the instant it starts hiding, before the
-        // owner's "restore the previous app" activation arrives — observed
-        // as the restore slipping past every overlay-close guard. A panel
-        // seen ordered in within the close-recovery window is therefore
-        // still in its lifecycle. The stamp refreshes on activation events
-        // of the overlay's pid while the panel is up.
-        if let seenAt = lastOverlayOrderedInByPid[pid],
-           now - seenAt <= Self.recentSameAppWindowCloseTTL
+
+        let lastOrderedIn = lastOverlayOrderedInByPid[pid]
+        if let lastOrderedIn,
+           now - lastOrderedIn <= Self.recentSameAppWindowCloseTTL,
+           recentDestroy.map({ $0 < lastOrderedIn }) ?? true
         {
-            return true
+            // A quick-terminal hide is orderOut before its destroy notification.
+            // The owner's restore activation can arrive in this interval.
+            return .beforeDestroy
         }
-        return false
+        if recentDestroy == nil, hasCurrentRecognizedOverlayFocus(for: pid) {
+            // A long-lived overlay can remain open beyond the ordered-in grace.
+            // During hide, WindowServer may report orderOut before AX delivers
+            // its destroy; Nehir's current non-managed target is then the direct,
+            // non-expiring evidence that this recognized overlay is still in its
+            // pre-destroy lifecycle.
+            return .beforeDestroy
+        }
+        if recentDestroy != nil {
+            return .recentlyDestroyed
+        }
+        return .inactive
     }
 
-    /// Whether any *other* pid's recognized overlay is currently in its
-    /// lifecycle window — the context in which a cause-less external
-    /// activation is likely that overlay owner's "restore the previous app"
-    /// call rather than a genuine user app switch.
-    private func crossPidOverlayLifecycleActive(excluding pid: pid_t) -> Bool {
-        overlayCapablePids.contains { $0 != pid && overlayWindowLifecycleActive(for: $0) }
+    private func hasCurrentRecognizedOverlayFocus(for pid: pid_t) -> Bool {
+        guard let controller,
+              controller.workspaceManager.isNonManagedFocusActive,
+              let currentTarget = controller.currentBorderTarget(),
+              !currentTarget.isManaged,
+              currentTarget.token.pid == pid,
+              recognizedOverlayWindowIdsByPid[pid]?.contains(currentTarget.token.windowId) == true
+        else {
+            return false
+        }
+        return true
+    }
+
+    /// Whether `pid`'s recognized overlay is still open/hiding or was destroyed
+    /// within the same-app close-recovery window. This — not pid-level teardown
+    /// evidence — scopes same-app overlay recovery to an actual overlay lifecycle.
+    private func overlayWindowLifecycleActive(for pid: pid_t) -> Bool {
+        switch overlayLifecyclePhase(for: pid) {
+        case .inactive:
+            false
+        case .beforeDestroy,
+             .recentlyDestroyed:
+            true
+        }
+    }
+
+    /// Whether another pid's overlay is still before its destroy signal, when a
+    /// cause-less activation can be the owner's automatic restore. Once destroy
+    /// has been processed, the close-anchor correction is complete and later app
+    /// activations must be treated as fresh user intent.
+    private func crossPidOverlayRestoreMayBePending(excluding pid: pid_t) -> Bool {
+        overlayCapablePids.contains { overlayPid in
+            guard overlayPid != pid else { return false }
+            return overlayLifecyclePhase(for: overlayPid) == .beforeDestroy
+        }
     }
 
     /// The workspace a recent follow_focus pinned for `pid`, if the hold has not
@@ -7664,10 +8690,15 @@ final class AXEventHandler: CGSEventDelegate {
         }
     }
 
+    private func managedReplacementWindowServerAlive(_ token: WindowToken) -> Bool {
+        guard let windowId = UInt32(exactly: token.windowId) else { return false }
+        return resolveWindowInfo(windowId)?.pid == token.pid
+    }
+
     private func flushManagedReplacementBurst(for key: ManagedReplacementKey) {
         pendingManagedReplacementTasks.removeValue(forKey: key)?.cancel()
         guard let pendingBurst = pendingManagedReplacementBursts[key] else { return }
-        if let extensionReason = oneSidedBurstCounterpartInFlight(pendingBurst, key: key),
+        if let blocker = oneSidedBurstCounterpartInFlight(pendingBurst, key: key),
            pendingBurst.flushExtensionCount < Self.maxOneSidedBurstFlushExtensions
         {
             var extendedBurst = pendingBurst
@@ -7677,7 +8708,9 @@ final class AXEventHandler: CGSEventDelegate {
                 key: key,
                 kind: .flushExtended(
                     policy: managedReplacementPolicyName(extendedBurst.policy),
-                    reason: extensionReason,
+                    reason: blocker.reason,
+                    blockerToken: blocker.token,
+                    blockerWorkspaceId: blocker.workspaceId,
                     extensionCount: extendedBurst.flushExtensionCount,
                     createCount: extendedBurst.creates.count,
                     destroyCount: extendedBurst.destroys.count
@@ -7698,7 +8731,7 @@ final class AXEventHandler: CGSEventDelegate {
                 for: key,
                 replacementCreated: !burst.creates.isEmpty
             )
-            auditPidWindowLiveness(for: key)
+            auditPidWindowLiveness(for: key, trigger: "burst_flush")
         }
         let elapsedMillis = max(
             0,
@@ -7720,9 +8753,42 @@ final class AXEventHandler: CGSEventDelegate {
         if !pairs.isEmpty {
             var excludedSequences: Set<UInt64> = []
             var rekeyedCount = 0
-            for pair in pairs where completeManagedReplacement(destroy: pair.destroy, create: pair.create) {
-                excludedSequences.formUnion(pair.excludedSequences)
-                rekeyedCount += 1
+            for pair in pairs {
+                let destroyToken = pair.destroy.candidate.token
+                let createToken = pair.create.candidate.token
+                recordManagedReplacementTrace(
+                    key: key,
+                    kind: .pairSelected(
+                        policy: policyName,
+                        destroySequence: pair.destroy.sequence,
+                        createSequence: pair.create.sequence,
+                        destroyToken: destroyToken,
+                        createToken: createToken,
+                        compatibleCreateTokens: pair.compatibleCreateTokens,
+                        destroyWsAlive: managedReplacementWindowServerAlive(destroyToken),
+                        createWsAlive: managedReplacementWindowServerAlive(createToken),
+                        destroyMetadataSummary: managedReplacementMetadataSummary(
+                            pair.destroy.candidate.replacementMetadata
+                        ),
+                        createMetadataSummary: managedReplacementMetadataSummary(
+                            pair.create.candidate.replacementMetadata
+                        )
+                    )
+                )
+                let rekeyed = completeManagedReplacement(destroy: pair.destroy, create: pair.create)
+                recordManagedReplacementTrace(
+                    key: key,
+                    kind: .pairCompleted(
+                        policy: policyName,
+                        destroyToken: destroyToken,
+                        createToken: createToken,
+                        rekeyed: rekeyed
+                    )
+                )
+                if rekeyed {
+                    excludedSequences.formUnion(pair.excludedSequences)
+                    rekeyedCount += 1
+                }
             }
             let replayedEvents = burst.orderedEvents(excludingSequences: excludedSequences)
             recordManagedReplacementTrace(
@@ -7781,10 +8847,6 @@ final class AXEventHandler: CGSEventDelegate {
         policyName: String
     ) {
         guard !burst.creates.isEmpty, !burst.destroys.isEmpty else { return }
-        func windowServerAlive(_ token: WindowToken) -> Bool {
-            guard let windowId = UInt32(exactly: token.windowId) else { return false }
-            return resolveWindowInfo(windowId)?.pid == token.pid
-        }
         for destroy in burst.destroys {
             for create in burst.creates {
                 let verdict: String
@@ -7805,8 +8867,8 @@ final class AXEventHandler: CGSEventDelegate {
                         destroyToken: destroy.candidate.token,
                         createToken: create.candidate.token,
                         verdict: verdict,
-                        destroyWsAlive: windowServerAlive(destroy.candidate.token),
-                        createWsAlive: windowServerAlive(create.candidate.token)
+                        destroyWsAlive: managedReplacementWindowServerAlive(destroy.candidate.token),
+                        createWsAlive: managedReplacementWindowServerAlive(create.candidate.token)
                     )
                 )
             }
@@ -7829,34 +8891,92 @@ final class AXEventHandler: CGSEventDelegate {
     /// never gets admitted next to the successor), and every burst flush
     /// (the settle point of a churn episode, catching whatever the first
     /// trigger raced past).
-    private func auditPidWindowLiveness(for key: ManagedReplacementKey) {
+    private func auditPidWindowLiveness(for key: ManagedReplacementKey, trigger: String) {
         Task { @MainActor [weak self] in
             guard let self, let controller = self.controller else { return }
+            let trackedAtStart = controller.workspaceManager.entries(forPid: key.pid).map(\.token)
+            self.recordManagedReplacementTrace(
+                key: key,
+                kind: .livenessAudit(
+                    trigger: trigger,
+                    phase: "started",
+                    trackedTokens: self.managedReplacementTokenList(trackedAtStart),
+                    enumeratedWindowIds: "pending",
+                    scheduledTokens: "pending",
+                    skippedTokens: "pending",
+                    outcome: "enumerating"
+                )
+            )
+
             let enumeration = await controller.axManager.windowEnumerationForPID(key.pid)
-            guard case .success(let windows) = enumeration else { return }
+            guard case .success(let windows) = enumeration else {
+                self.recordManagedReplacementTrace(
+                    key: key,
+                    kind: .livenessAudit(
+                        trigger: trigger,
+                        phase: "completed",
+                        trackedTokens: self.managedReplacementTokenList(trackedAtStart),
+                        enumeratedWindowIds: "failed",
+                        scheduledTokens: "none",
+                        skippedTokens: "none",
+                        outcome: "enumeration_failed"
+                    )
+                )
+                return
+            }
+
             let enumeratedWindowIds = Set(windows.map(\.2))
-            for entry in controller.workspaceManager.entries(forPid: key.pid) {
+            let trackedEntries = controller.workspaceManager.entries(forPid: key.pid)
+            var scheduledTokens: [WindowToken] = []
+            var skipped: [String] = []
+            for entry in trackedEntries where !enumeratedWindowIds.contains(entry.token.windowId) {
                 let token = entry.token
-                guard !enumeratedWindowIds.contains(token.windowId),
-                      self.pendingDestroyLivenessVerificationTasks[token] == nil,
-                      self.pendingManagedReplacementBursts[
-                          ManagedReplacementKey(pid: token.pid, workspaceId: entry.workspaceId)
-                      ]?.destroys.contains(where: { $0.candidate.token == token }) != true
-                else {
+                if self.pendingDestroyLivenessVerificationTasks[token] != nil {
+                    skipped.append("\(token):pending_verification")
                     continue
                 }
+                let tokenKey = ManagedReplacementKey(pid: token.pid, workspaceId: entry.workspaceId)
+                if self.pendingManagedReplacementBursts[tokenKey]?.destroys.contains(where: {
+                    $0.candidate.token == token
+                }) == true {
+                    skipped.append("\(token):queued_destroy")
+                    continue
+                }
+
                 controller.diagnostics.recordRuntimeViewportTrace(
                     workspaceId: entry.workspaceId,
                     reason: "replacement_liveness_audit",
                     details: [
                         "uptimeMs=\(self.traceUptimeMs())",
+                        "trigger=\(trigger)",
                         "token=\(token)",
                         "outcome=verification_scheduled"
                     ]
                 )
+                scheduledTokens.append(token)
                 self.scheduleDestroyLivenessVerification(for: token)
             }
+            self.recordManagedReplacementTrace(
+                key: key,
+                kind: .livenessAudit(
+                    trigger: trigger,
+                    phase: "completed",
+                    trackedTokens: self.managedReplacementTokenList(trackedEntries.map(\.token)),
+                    enumeratedWindowIds: enumeratedWindowIds.sorted().map(String.init).joined(separator: ","),
+                    scheduledTokens: self.managedReplacementTokenList(scheduledTokens),
+                    skippedTokens: skipped.isEmpty ? "none" : skipped.joined(separator: ","),
+                    outcome: scheduledTokens.isEmpty ? "no_verification_scheduled" : "verification_scheduled"
+                )
+            )
         }
+    }
+
+    private func managedReplacementTokenList(_ tokens: [WindowToken]) -> String {
+        guard !tokens.isEmpty else { return "none" }
+        return tokens
+            .sorted { ($0.pid, $0.windowId) < ($1.pid, $1.windowId) }
+            .map(String.init(describing:))
+            .joined(separator: ",")
     }
 
     // Upper bound on one-sided flush extensions. The longest counterpart
@@ -7874,20 +8994,34 @@ final class AXEventHandler: CGSEventDelegate {
     private func oneSidedBurstCounterpartInFlight(
         _ burst: PendingManagedReplacementBurst,
         key: ManagedReplacementKey
-    ) -> String? {
+    ) -> OneSidedBurstBlocker? {
         if burst.creates.isEmpty, !burst.destroys.isEmpty {
-            let createRetryInFlight = pendingCreatedWindowRetryTasks.keys.contains { windowId in
+            let retryWindowId = pendingCreatedWindowRetryTasks.keys.filter { windowId in
                 if let retryPid = createdWindowRetryPidById[windowId] {
                     return retryPid == key.pid
                 }
                 return resolveWindowInfo(windowId)?.pid == key.pid
-            }
-            if createRetryInFlight {
-                return "create_retry_in_flight"
+            }.min()
+            if let retryWindowId {
+                let context = createPlacementContextsByWindowId[retryWindowId]
+                return .init(
+                    reason: "create_retry_in_flight",
+                    token: WindowToken(pid: key.pid, windowId: Int(retryWindowId)),
+                    workspaceId: context?.activeFocusRequestWorkspaceId
+                        ?? context?.focusedWorkspaceId
+                        ?? context?.recentPidWorkspaceId
+                )
             }
         } else if burst.destroys.isEmpty, !burst.creates.isEmpty {
-            if pendingDestroyLivenessVerificationTasks.keys.contains(where: { $0.pid == key.pid }) {
-                return "destroy_verification_in_flight"
+            let token = pendingDestroyLivenessVerificationTasks.keys
+                .filter { $0.pid == key.pid }
+                .min { $0.windowId < $1.windowId }
+            if let token {
+                return .init(
+                    reason: "destroy_verification_in_flight",
+                    token: token,
+                    workspaceId: controller?.workspaceManager.entry(for: token)?.workspaceId
+                )
             }
         }
         return nil
@@ -7972,6 +9106,9 @@ final class AXEventHandler: CGSEventDelegate {
         pid: pid_t
     ) -> Bool {
         guard let controller else { return false }
+        if pendingCreatedWindowRetryTasks[windowId] != nil {
+            return true
+        }
         let token = WindowToken(pid: pid, windowId: Int(windowId))
         guard controller.workspaceManager.entry(for: token) == nil else {
             cancelCreatedWindowRetry(windowId: windowId)
@@ -8010,6 +9147,9 @@ final class AXEventHandler: CGSEventDelegate {
 
     private func scheduleCreatedWindowInfoRetryIfNeeded(windowId: UInt32) -> Bool {
         guard let controller else { return false }
+        if pendingCreatedWindowRetryTasks[windowId] != nil {
+            return true
+        }
         guard !controller.isOwnedWindow(windowNumber: Int(windowId)) else {
             cancelCreatedWindowRetry(windowId: windowId)
             discardCreatePlacementContext(windowId: windowId)
@@ -8267,7 +9407,12 @@ final class AXEventHandler: CGSEventDelegate {
             appFullscreen: appFullscreenForFallbackLifecyclePreservation(observedAppFullscreen: appFullscreen),
             preserveFocusedToken: true
         )
-        recordNonManagedFallbackEntered(pid: entry.pid, source: source)
+        recordNonManagedFallbackEntered(
+            pid: entry.pid,
+            source: source,
+            token: entry.token,
+            reason: "managed_window_demoted"
+        )
         return true
     }
 
@@ -8366,7 +9511,12 @@ final class AXEventHandler: CGSEventDelegate {
             appFullscreen: fallbackFullscreen,
             preserveFocusedToken: false
         )
-        recordNonManagedFallbackEntered(pid: pid, source: source)
+        recordNonManagedFallbackEntered(
+            pid: pid,
+            source: source,
+            token: nil,
+            reason: "missing_focused_window"
+        )
         if hasRecentAppActivation(for: pid),
            controller.workspaceManager.entries(forPid: pid).isEmpty,
            pid != getpid()
@@ -8523,6 +9673,9 @@ final class AXEventHandler: CGSEventDelegate {
             $0.token.pid != pid
         }
         deferredSameAppActiveNativeActivationTokens = deferredSameAppActiveNativeActivationTokens.filter {
+            $0.pid != pid
+        }
+        pendingSameAppFocusSuccessionProbeTokens = pendingSameAppFocusSuccessionProbeTokens.filter {
             $0.pid != pid
         }
 

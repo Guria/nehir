@@ -115,6 +115,14 @@ final class WMController {
         let manualOverride: ManualWindowOverride?
     }
 
+    private enum WindowServerPointerDisposition {
+        case skip
+        case managedTarget
+        case unmanagedOccluder
+    }
+
+    private static let notificationCenterBundleId = "com.apple.notificationcenterui"
+
     var isEnabled: Bool = true
     var hotkeysEnabled: Bool = true
     private(set) var desiredEnabled: Bool = true
@@ -2959,7 +2967,11 @@ final class WMController {
         let decision = applyingManualOverride
             ? decisionApplyingManualOverride(baseDecision, manualOverride: manualOverride)
             : baseDecision
-        axEventHandler.armOverlayCapabilityIfNeeded(source: baseDecision.source, token: token)
+        axEventHandler.armOverlayCapabilityIfNeeded(
+            source: baseDecision.source,
+            token: token,
+            facts: facts
+        )
         let evaluation = WindowDecisionEvaluation(
             token: token,
             facts: facts,
@@ -3062,23 +3074,20 @@ final class WMController {
         return unmanagedWindowServerWindowFramesProvider(trackedWindowIds).contains { $0.contains(point) }
     }
 
-    /// Focus-follows-mouse occlusion variant that excludes click-through
-    /// decorative overlays on the snapshot-fallback branch.
+    /// Pointer occlusion variant that excludes known click-through system and
+    /// decorative surfaces while preserving interactive overlays.
     ///
-    /// `unmanagedWindowServerWindowCovers` treats any on-screen, layer-0,
-    /// ≥80 px, unmanaged window frame as an occluder. That is correct for
-    /// interactive overlays (e.g. the Ghostty Quick terminal) but wrong for a
-    /// decorative click-through overlay such as the JankyBorders app: it is
-    /// purely visual and never receives clicks, so FFM should fire on the
-    /// managed tile beneath. JankyBorders creates its windows via private SLS
-    /// APIs (no `ignoresMouseEvents`, empty opaque-shape region) and neither
-    /// the CGEvent window-under-pointer fields (empty for these mouse-moved
-    /// events — verified) nor the `CGWindowList` snapshot can flag it as
-    /// click-through. The conservative discriminator is: only a faceless owner
-    /// whose WindowServer owner name matches a known decorative border utility
-    /// (e.g. `borders` / JankyBorders) is excluded (#64). Unknown faceless
-    /// owners remain occluding, preserving Ghostty Quick terminal suppression.
-    /// System chrome such as the Dock is also excluded on both paths.
+    /// `CGWindowList` includes windows that are geometrically above the target
+    /// but do not receive pointer events. This includes decorative border
+    /// utilities and Notification Centre's screen-sized backdrop. The latter is
+    /// structurally identified by its bundle, screen-sized frame, and level
+    /// between the Dock and main menu; notification cards and panels remain
+    /// interactive because they do not match that shape. Unknown faceless
+    /// owners remain occluding, preserving Ghostty Quick Terminal suppression.
+    ///
+    /// Snapshot order is front-to-back. The scan therefore stops at the first
+    /// tracked managed window after skipping known click-through surfaces;
+    /// unmanaged windows deeper in the stack cannot occlude that target.
     func unmanagedInteractiveWindowServerWindowCovers(
         point: CGPoint,
         windowUnderPointer: Int? = nil,
@@ -3091,8 +3100,8 @@ final class WMController {
                 trackedWindowIds: trackedWindowIds
             )
         }
-
         guard allowWindowServerSnapshotFallback else { return false }
+        let windows = unmanagedOverlayWindowInfoProvider()
         // Single source of truth: the injectable window-info provider (the live
         // `CGWindowList` snapshot in production; a stub in tests). Filtering for
         // an interactive unmanaged overlay that covers `point` — excluding
@@ -3100,7 +3109,7 @@ final class WMController {
         return Self.visibleUnmanagedInteractiveWindowServerWindowCovers(
             point: point,
             trackedWindowIds: trackedWindowIds,
-            windows: unmanagedOverlayWindowInfoProvider(),
+            windows: windows,
             isOwnedWindowNumber: { [ownedWindowRegistry] windowNumber in
                 ownedWindowRegistry.contains(windowNumber: windowNumber)
             },
@@ -3117,6 +3126,22 @@ final class WMController {
         isOwnedWindowNumber: @MainActor (Int) -> Bool = { _ in false },
         ownerAppIsInteractiveApplication: @MainActor (pid_t) -> Bool = { _ in true }
     ) -> Bool {
+        visibleUnmanagedInteractiveWindowServerOccluder(
+            point: point,
+            trackedWindowIds: trackedWindowIds,
+            windows: providedWindows,
+            isOwnedWindowNumber: isOwnedWindowNumber,
+            ownerAppIsInteractiveApplication: ownerAppIsInteractiveApplication
+        ) != nil
+    }
+
+    private static func visibleUnmanagedInteractiveWindowServerOccluder(
+        point: CGPoint,
+        trackedWindowIds: Set<Int>,
+        windows providedWindows: [[String: Any]]?,
+        isOwnedWindowNumber: @MainActor (Int) -> Bool,
+        ownerAppIsInteractiveApplication: @MainActor (pid_t) -> Bool
+    ) -> (info: [String: Any], index: Int)? {
         let windows: [[String: Any]]
         if let providedWindows {
             windows = providedWindows
@@ -3124,57 +3149,77 @@ final class WMController {
             windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
         }
 
-        for info in windows {
-            let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
-            // FFM snapshot fallback must catch interactive overlays above the
-            // normal app layer too (e.g. Ghostty Quick terminal). Decorative
-            // JankyBorders windows are filtered later by owner name.
-            guard layer >= 0 else { continue }
-
-            let isOnscreen = (info[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? false
-            guard isOnscreen else { continue }
-
-            guard let bounds = info[kCGWindowBounds as String] as? [String: Any],
-                  let x = (bounds["X"] as? NSNumber)?.doubleValue,
-                  let y = (bounds["Y"] as? NSNumber)?.doubleValue,
-                  let width = (bounds["Width"] as? NSNumber)?.doubleValue,
-                  let height = (bounds["Height"] as? NSNumber)?.doubleValue,
-                  width > 0,
-                  height > 0
-            else { continue }
-
-            let frame = ScreenCoordinateSpace.toAppKit(
-                rect: CGRect(x: x, y: y, width: width, height: height)
-            )
-            guard frame.contains(point) else { continue }
-
-            let windowId = (info[kCGWindowNumber as String] as? NSNumber)?.intValue ?? 0
-            guard windowId > 0 else { continue }
-            if isOwnedWindowNumber(windowId) { continue }
-            if trackedWindowIds.contains(windowId) { continue }
-            if width < 80 || height < 80,
-               !isTransientWindowServerSurface(windowId: windowId)
-            {
-                continue
-            }
-
-            let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
-            let ownerName = info[kCGWindowOwnerName as String] as? String
-            // Only a known decorative border utility gets the faceless-process
-            // exemption. Ghostty's Quick terminal can also appear faceless on
-            // the snapshot path, but it is interactive and must still occlude.
-            if isExemptUnmanagedInteractiveOwner(
-                ownerName: ownerName,
-                pid: pid,
+        for (index, info) in windows.enumerated() {
+            switch windowServerPointerDisposition(
+                for: info,
+                at: point,
+                trackedWindowIds: trackedWindowIds,
+                isOwnedWindowNumber: isOwnedWindowNumber,
                 ownerAppIsInteractiveApplication: ownerAppIsInteractiveApplication
             ) {
+            case .skip:
                 continue
+            case .managedTarget:
+                // `CGWindowList` is front-to-back. Once a managed window that
+                // receives pointer events is reached, deeper unmanaged windows
+                // cannot occlude it.
+                return nil
+            case .unmanagedOccluder:
+                return (info, index)
             }
-
-            return true
         }
+        return nil
+    }
 
-        return false
+    private static func windowServerPointerDisposition(
+        for info: [String: Any],
+        at point: CGPoint,
+        trackedWindowIds: Set<Int>,
+        isOwnedWindowNumber: @MainActor (Int) -> Bool,
+        ownerAppIsInteractiveApplication: @MainActor (pid_t) -> Bool
+    ) -> WindowServerPointerDisposition {
+        let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+        // Interactive overlays can be above the normal app layer. Decorative
+        // and system backdrop windows are filtered below.
+        guard layer >= 0 else { return .skip }
+        guard (info[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true else { return .skip }
+        guard let frame = windowServerFrame(from: info), frame.contains(point) else { return .skip }
+        let windowId = (info[kCGWindowNumber as String] as? NSNumber)?.intValue ?? 0
+        guard windowId > 0 else { return .skip }
+        if isOwnedWindowNumber(windowId) { return .skip }
+        if trackedWindowIds.contains(windowId) { return .managedTarget }
+        if frame.width < 80 || frame.height < 80,
+           !isTransientWindowServerSurface(windowId: windowId)
+        {
+            return .skip
+        }
+        let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
+        if isClickThroughNotificationCenterBackdrop(frame: frame, layer: layer, pid: pid) {
+            return .skip
+        }
+        let ownerName = info[kCGWindowOwnerName as String] as? String
+        // Ghostty's Quick terminal can appear faceless, but remains interactive.
+        return isExemptUnmanagedInteractiveOwner(
+            ownerName: ownerName,
+            pid: pid,
+            ownerAppIsInteractiveApplication: ownerAppIsInteractiveApplication
+        ) ? .skip : .unmanagedOccluder
+    }
+
+    private static func windowServerFrame(from info: [String: Any]) -> CGRect? {
+        guard let bounds = info[kCGWindowBounds as String] as? [String: Any],
+              let x = (bounds["X"] as? NSNumber)?.doubleValue,
+              let y = (bounds["Y"] as? NSNumber)?.doubleValue,
+              let width = (bounds["Width"] as? NSNumber)?.doubleValue,
+              let height = (bounds["Height"] as? NSNumber)?.doubleValue,
+              width > 0,
+              height > 0
+        else {
+            return nil
+        }
+        return ScreenCoordinateSpace.toAppKit(
+            rect: CGRect(x: x, y: y, width: width, height: height)
+        )
     }
 
     private static func isDecorativeBorderOverlayOwner(_ ownerName: String?) -> Bool {
@@ -3202,6 +3247,40 @@ final class WMController {
         return ownerName?.trimmingCharacters(in: .whitespacesAndNewlines) == "Dock"
     }
 
+    private static func isClickThroughNotificationCenterBackdrop(
+        frame: CGRect,
+        layer: Int,
+        pid: pid_t
+    ) -> Bool {
+        let bundleIdentifier = pid > 0
+            ? NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+            : nil
+        return isClickThroughNotificationCenterBackdrop(
+            bundleIdentifier: bundleIdentifier,
+            layer: layer,
+            frame: frame,
+            screenFrames: NSScreen.screens.map(\.frame)
+        )
+    }
+
+    static func isClickThroughNotificationCenterBackdrop(
+        bundleIdentifier: String?,
+        layer: Int,
+        frame: CGRect,
+        screenFrames: [CGRect]
+    ) -> Bool {
+        guard bundleIdentifier == notificationCenterBundleId else { return false }
+        let dockLevel = Int(CGWindowLevelForKey(.dockWindow))
+        let mainMenuLevel = Int(CGWindowLevelForKey(.mainMenuWindow))
+        guard layer > dockLevel, layer < mainMenuLevel else { return false }
+        let integralFrame = frame.integral
+        if screenFrames.contains(where: { $0.integral == integralFrame }) {
+            return true
+        }
+        let virtualScreenFrame = screenFrames.reduce(CGRect.null) { $0.union($1) }
+        return !virtualScreenFrame.isNull && virtualScreenFrame.integral == integralFrame
+    }
+
     private static func isTransientWindowServerSurface(windowId: Int) -> Bool {
         guard let windowInfo = SkyLight.shared.queryWindowInfo(UInt32(windowId)) else { return false }
         return windowInfo.hasTransientSurfaceEvidence
@@ -3217,12 +3296,21 @@ final class WMController {
         guard isUnmanagedWindowServerWindow(windowId: windowId, trackedWindowIds: trackedWindowIds) else {
             return false
         }
-        if let owner = unmanagedWindowServerWindowOwnerProvider(windowId),
-           Self.isSystemChromeOwner(ownerName: owner.ownerName, pid: owner.pid)
-        {
+        guard let owner = unmanagedWindowServerWindowOwnerProvider(windowId) else { return true }
+        if Self.isSystemChromeOwner(ownerName: owner.ownerName, pid: owner.pid) {
             return false
         }
-        return true
+        let bundleIdentifier = NSRunningApplication(processIdentifier: owner.pid)?.bundleIdentifier
+        guard bundleIdentifier == Self.notificationCenterBundleId else { return true }
+        guard let info = unmanagedOverlayWindowInfoProvider().first(where: {
+            ($0[kCGWindowNumber as String] as? NSNumber)?.intValue == windowId
+        }),
+            let frame = Self.windowServerFrame(from: info)
+        else {
+            return true
+        }
+        let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+        return !Self.isClickThroughNotificationCenterBackdrop(frame: frame, layer: layer, pid: owner.pid)
     }
 
     func unmanagedOverlayWindowServerWindowCovers(point: CGPoint) -> Bool {

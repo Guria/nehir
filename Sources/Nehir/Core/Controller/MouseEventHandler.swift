@@ -957,14 +957,33 @@ final class MouseEventHandler {
         markRecentFloatingPointerInteractionIfNeeded(at: location, windowUnderPointer: windowUnderPointer)
         suppressMouseMoveToFocusedWindowForPointerTarget(at: location, windowUnderPointer: windowUnderPointer)
 
+        let pointerWorkspaceId = workspaceIdForPointer(at: location)
+        let interactionWorkspaceId = controller.interactionWorkspace()?.id
         guard let engine = controller.niriEngine,
-              let wsId = workspaceIdForPointer(at: location) ?? controller.interactionWorkspace()?.id
+              let wsId = pointerWorkspaceId ?? interactionWorkspaceId
         else {
+            let engineAvailability = controller.niriEngine == nil ? "nil" : "available"
+            let pointerWorkspace = pointerWorkspaceId?.uuidString ?? "nil"
+            let interactionWorkspace = interactionWorkspaceId?.uuidString ?? "nil"
+            traceMouseFocus(
+                "mouseDown.focusIntent.resolve outcome=missing_context engine=\(engineAvailability) pointerWorkspace=\(pointerWorkspace) interactionWorkspace=\(interactionWorkspace) loc=\(formatPoint(location))"
+            )
             return false
         }
 
-        if button == .left, let tiledWindow = engine.hitTestTiled(point: location, in: wsId) {
-            controller.suppressMouseMoveToFocusedWindow(for: tiledWindow.token)
+        if button == .left {
+            let focusIntentTokens = managedPointerFocusIntentTokens(
+                at: location,
+                windowUnderPointer: windowUnderPointer,
+                workspaceId: wsId,
+                engine: engine
+            )
+            if !focusIntentTokens.isEmpty {
+                controller.axEventHandler.recordManagedPointerFocusIntent(focusIntentTokens)
+                traceMouseFocus(
+                    "mouseDown.focusIntent candidates=\(focusIntentTokens) workspace=\(wsId) loc=\(formatPoint(location))"
+                )
+            }
         }
 
         if button == .left, modifiers.contains(.maskAlternate) {
@@ -1041,6 +1060,59 @@ final class MouseEventHandler {
             return true
         }
         return false
+    }
+
+    private func managedPointerFocusIntentTokens(
+        at location: CGPoint,
+        windowUnderPointer: Int?,
+        workspaceId: WorkspaceDescriptor.ID,
+        engine: NiriLayoutEngine
+    ) -> [WindowToken] {
+        guard let controller else {
+            traceMouseFocus(
+                "mouseDown.focusIntent.resolve outcome=missing_controller workspace=\(workspaceId.uuidString) direct=\(windowUnderPointer ?? 0) loc=\(formatPoint(location))"
+            )
+            return []
+        }
+        if controller.unmanagedInteractiveWindowServerWindowCovers(
+            point: location,
+            windowUnderPointer: windowUnderPointer
+        ) {
+            traceMouseFocus(
+                "mouseDown.focusIntent.resolve outcome=unmanaged_occlusion workspace=\(workspaceId.uuidString) direct=\(windowUnderPointer ?? 0) snapshotFallback=\(windowUnderPointer == nil || windowUnderPointer == 0) loc=\(formatPoint(location))"
+            )
+            return []
+        }
+        if let windowUnderPointer,
+           windowUnderPointer > 0,
+           let directEntry = controller.workspaceManager.entry(forWindowId: windowUnderPointer),
+           directEntry.workspaceId == workspaceId,
+           directEntry.observedState.isVisible,
+           directEntry.visibility == .visible
+        {
+            traceMouseFocus(
+                "mouseDown.focusIntent.resolve outcome=direct_managed candidates=[\(directEntry.token)] workspace=\(workspaceId.uuidString) direct=\(windowUnderPointer) loc=\(formatPoint(location))"
+            )
+            return [directEntry.token]
+        }
+
+        let floatingTokens = floatingEntriesCoveringPointer(at: location, in: workspaceId).map(\.token)
+        let tiledToken = engine.hitTestFocusableWindow(point: location, in: workspaceId)?.token
+        var candidates = floatingTokens
+        if let tiledToken, !candidates.contains(tiledToken) {
+            candidates.append(tiledToken)
+        }
+        guard !candidates.isEmpty else {
+            traceMouseFocus(
+                "mouseDown.focusIntent.resolve outcome=no_focusable_hit workspace=\(workspaceId.uuidString) direct=\(windowUnderPointer ?? 0) loc=\(formatPoint(location))"
+            )
+            return []
+        }
+        let tiledDescription = tiledToken.map(String.init(describing:)) ?? "nil"
+        traceMouseFocus(
+            "mouseDown.focusIntent.resolve outcome=managed_candidates candidates=\(candidates) floating=\(floatingTokens) tiled=\(tiledDescription) workspace=\(workspaceId.uuidString) direct=\(windowUnderPointer ?? 0) loc=\(formatPoint(location))"
+        )
+        return candidates
     }
 
     private func resizeEdges(for location: CGPoint, in frame: CGRect) -> ResizeEdge {
@@ -1422,8 +1494,15 @@ final class MouseEventHandler {
         at location: CGPoint,
         in workspaceId: WorkspaceDescriptor.ID
     ) -> WindowModel.Entry? {
-        guard let controller else { return nil }
-        return controller.workspaceManager.floatingEntries(in: workspaceId).first { entry in
+        floatingEntriesCoveringPointer(at: location, in: workspaceId).first
+    }
+
+    private func floatingEntriesCoveringPointer(
+        at location: CGPoint,
+        in workspaceId: WorkspaceDescriptor.ID
+    ) -> [WindowModel.Entry] {
+        guard let controller else { return [] }
+        return controller.workspaceManager.floatingEntries(in: workspaceId).filter { entry in
             guard entry.observedState.isVisible, entry.visibility == .visible else { return false }
             return floatingFrame(for: entry)?.contains(location) ?? false
         }

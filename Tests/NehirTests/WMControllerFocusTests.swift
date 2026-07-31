@@ -1010,7 +1010,7 @@ private func waitForFocusRefresh(on controller: WMController) async {
         #expect(controller.workspaceManager.lastFocusedHandle(in: workspaceId) == survivor)
     }
 
-    @Test @MainActor func unmanagedSameAppFocusSuppressesInactiveWorkspaceActivation() async {
+    @Test @MainActor func genericUnmanagedFocusDoesNotSuppressInactiveWorkspaceActivation() async {
         let ghosttyPid: pid_t = 74_001
         let operations = WindowFocusOperations(
             activateApp: { _ in },
@@ -1061,22 +1061,23 @@ private func waitForFocusRefresh(on controller: WMController) async {
             return AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: inactiveHandle.id.windowId)
         }
 
-        // The guard only applies to successor-focus churn after one of the app's
-        // windows closes; simulate that close first.
+        // Generic unmanaged focus and an unrelated same-pid destroy are not an
+        // overlay lifecycle signal. The managed focused-window event must still
+        // reveal its inactive workspace and become the keyboard-focus target.
         controller.axEventHandler.handleRemoved(pid: ghosttyPid, winId: 79_999)
         controller.axEventHandler.handleAppActivation(pid: ghosttyPid, source: .focusedWindowChanged)
         controller.axEventHandler.handleWindowMiniaturized(pid: unmanagedToken.pid, windowId: unmanagedToken.windowId)
-        #expect(controller.workspaceManager.activeWorkspace(on: monitorId)?.id == workspaceId)
-        #expect(controller.workspaceManager.focusedHandle != inactiveHandle)
+        #expect(controller.workspaceManager.activeWorkspace(on: monitorId)?.id == workspaceTwo)
+        #expect(controller.workspaceManager.focusedHandle == inactiveHandle)
 
         try? await Task.sleep(for: .milliseconds(180))
 
-        #expect(controller.workspaceManager.activeWorkspace(on: monitorId)?.id == workspaceId)
-        #expect(controller.workspaceManager.focusedHandle != inactiveHandle)
-        #expect(controller.currentBorderTarget() == nil)
+        #expect(controller.workspaceManager.activeWorkspace(on: monitorId)?.id == workspaceTwo)
+        #expect(controller.workspaceManager.focusedHandle == inactiveHandle)
+        #expect(controller.currentBorderTarget()?.token == inactiveToken)
     }
 
-    @Test @MainActor func unmanagedSameAppFocusSuppressesCurrentWorkspaceActivation() async {
+    @Test @MainActor func genericUnmanagedFocusDoesNotSuppressCurrentWorkspaceActivation() async {
         let ghosttyPid: pid_t = 74_201
         let operations = WindowFocusOperations(
             activateApp: { _ in },
@@ -1118,16 +1119,16 @@ private func waitForFocusRefresh(on controller: WMController) async {
             return AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: sameWorkspaceHandle.id.windowId)
         }
 
-        // The guard only applies to successor-focus churn after one of the app's
-        // windows closes; simulate that close first.
+        // The focused managed window remains authoritative even when it follows
+        // generic unmanaged focus and an unrelated same-pid destroy.
         controller.axEventHandler.handleRemoved(pid: ghosttyPid, winId: 79_998)
         controller.axEventHandler.handleAppActivation(pid: ghosttyPid, source: .focusedWindowChanged)
         controller.axEventHandler.handleWindowMiniaturized(pid: unmanagedToken.pid, windowId: unmanagedToken.windowId)
         try? await Task.sleep(for: .milliseconds(50))
 
         #expect(controller.workspaceManager.activeWorkspace(on: monitorId)?.id == workspaceId)
-        #expect(controller.workspaceManager.focusedHandle != sameWorkspaceHandle)
-        #expect(controller.currentBorderTarget() == nil)
+        #expect(controller.workspaceManager.focusedHandle == sameWorkspaceHandle)
+        #expect(controller.currentBorderTarget()?.token == sameWorkspaceToken)
     }
 
     @Test @MainActor func focusWindowIsNoOpWhileLocked() {

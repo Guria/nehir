@@ -35,6 +35,19 @@ struct QuickTerminalCloseAnchorTests {
         let fronted: FrontedWindows
     }
 
+    private final class OverlayWindowState: @unchecked Sendable {
+        var isPresent = true
+        var isOrderedIn = true
+    }
+
+    private struct CrossAppFixture {
+        let controller: WMController
+        let overlayPid: pid_t
+        let overlayWindowId: Int
+        let targetEntry: WindowModel.Entry
+        let overlayState: OverlayWindowState
+    }
+
     /// Records the windows Nehir fronted, in order. Window-level granularity
     /// matters: the defect is about *which* window of an app ends up focused,
     /// so a pid alone cannot tell a pass from a failure.
@@ -107,7 +120,8 @@ struct QuickTerminalCloseAnchorTests {
         // overlay-capable pid and the window id whose destroy means teardown.
         controller.axEventHandler.armOverlayCapabilityIfNeeded(
             source: .builtInRule("ghosttyQuickTerminalOverlay"),
-            token: WindowToken(pid: overlayPid, windowId: overlayWindowId)
+            token: WindowToken(pid: overlayPid, windowId: overlayWindowId),
+            facts: quickTerminalFacts(pid: overlayPid, windowId: overlayWindowId)
         )
 
         return Fixture(
@@ -119,6 +133,99 @@ struct QuickTerminalCloseAnchorTests {
             siblingToken: siblingToken,
             neighborToken: neighborToken,
             fronted: fronted
+        )
+    }
+
+    private func quickTerminalFacts(pid: pid_t, windowId: Int) -> WindowRuleFacts {
+        var windowServer = WindowServerInfo(
+            id: UInt32(windowId),
+            pid: pid,
+            level: 3,
+            frame: CGRect(x: 0, y: 40, width: 1_920, height: 1_000)
+        )
+        windowServer.tags = 0x2
+        return WindowRuleFacts(
+            appName: "Ghostty",
+            ax: AXWindowFacts(
+                role: kAXWindowRole as String,
+                subrole: kAXFloatingWindowSubrole as String,
+                title: "Terminal",
+                hasCloseButton: true,
+                hasFullscreenButton: false,
+                fullscreenButtonEnabled: nil,
+                hasZoomButton: true,
+                hasMinimizeButton: true,
+                appPolicy: .regular,
+                bundleId: "com.mitchellh.ghostty",
+                attributeFetchSucceeded: true
+            ),
+            sizeConstraints: nil,
+            windowServer: windowServer
+        )
+    }
+
+    private func makeCrossAppFixture() -> CrossAppFixture? {
+        let controller = makeLayoutPlanTestController()
+        guard let sourceWorkspaceId = controller.interactionWorkspace()?.id,
+              let targetWorkspaceId = controller.workspaceManager.workspaceId(for: "2", createIfMissing: false),
+              let monitorId = controller.workspaceManager.monitorId(for: sourceWorkspaceId)
+        else {
+            Issue.record("Missing cross-app quick-terminal workspace fixture")
+            return nil
+        }
+
+        let overlayPid: pid_t = 9_201
+        let targetPid: pid_t = 9_202
+        let overlayWindowId = 9_211
+        let sourceToken = controller.workspaceManager.addWindow(
+            AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: 9_212),
+            pid: overlayPid,
+            windowId: 9_212,
+            to: sourceWorkspaceId
+        )
+        let targetToken = controller.workspaceManager.addWindow(
+            AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: 9_213),
+            pid: targetPid,
+            windowId: 9_213,
+            to: targetWorkspaceId
+        )
+        guard let targetEntry = controller.workspaceManager.entry(for: targetToken) else {
+            Issue.record("Missing cross-app quick-terminal target entry")
+            return nil
+        }
+        #expect(controller.workspaceManager.setManagedFocus(
+            sourceToken,
+            in: sourceWorkspaceId,
+            onMonitor: monitorId
+        ))
+
+        let facts = quickTerminalFacts(pid: overlayPid, windowId: overlayWindowId)
+        controller.axEventHandler.armOverlayCapabilityIfNeeded(
+            source: .builtInRule("ghosttyQuickTerminalOverlay"),
+            token: WindowToken(pid: overlayPid, windowId: overlayWindowId),
+            facts: facts
+        )
+
+        let overlayState = OverlayWindowState()
+        controller.axEventHandler.windowInfoProviderIsAuthoritativeForTests = true
+        controller.axEventHandler.windowInfoProvider = { windowId in
+            guard overlayState.isPresent,
+                  windowId == UInt32(overlayWindowId)
+            else {
+                return nil
+            }
+            return facts.windowServer
+        }
+        controller.axEventHandler.windowOrderedInProvider = { windowId in
+            windowId == UInt32(overlayWindowId) ? overlayState.isOrderedIn : nil
+        }
+
+        return CrossAppFixture(
+            controller: controller,
+            overlayPid: overlayPid,
+            overlayWindowId: overlayWindowId,
+            targetEntry: targetEntry,
+            overlayState: overlayState
         )
     }
 
@@ -206,5 +313,59 @@ struct QuickTerminalCloseAnchorTests {
 
         #expect(fx.fronted.tokens.isEmpty)
         #expect(fx.controller.workspaceManager.confirmedManagedFocusToken == fx.neighborToken)
+    }
+
+    @Test func automaticCrossAppRestoreIsSuppressedWhileOverlayIsStillOrderedIn() {
+        guard let fx = makeCrossAppFixture() else { return }
+
+        fx.controller.axEventHandler.handleManagedAppActivation(
+            entry: fx.targetEntry,
+            isWorkspaceActive: false,
+            appFullscreen: false,
+            source: .workspaceDidActivateApplication
+        )
+
+        #expect(fx.controller.axEventHandler.niriCreateFocusTraceSnapshotForTests().contains { event in
+            if case let .followFocusToParkedWindow(token, workspaceId, decision) = event.kind {
+                return token == fx.targetEntry.token &&
+                    workspaceId == fx.targetEntry.workspaceId &&
+                    decision == "skip reason=causeless_external_overlay_close"
+            }
+            return false
+        })
+    }
+
+    @Test func crossAppActivationFollowsParkedWindowImmediatelyAfterOverlayDestroy() {
+        guard let fx = makeCrossAppFixture() else { return }
+
+        fx.overlayState.isOrderedIn = false
+        fx.overlayState.isPresent = false
+        fx.controller.axEventHandler.handleRemoved(
+            pid: fx.overlayPid,
+            winId: fx.overlayWindowId
+        )
+        fx.controller.axEventHandler.handleManagedAppActivation(
+            entry: fx.targetEntry,
+            isWorkspaceActive: false,
+            appFullscreen: false,
+            source: .workspaceDidActivateApplication
+        )
+
+        let trace = fx.controller.axEventHandler.niriCreateFocusTraceSnapshotForTests()
+        #expect(trace.contains { event in
+            if case let .followFocusToParkedWindow(token, workspaceId, decision) = event.kind {
+                return token == fx.targetEntry.token &&
+                    workspaceId == fx.targetEntry.workspaceId &&
+                    decision == "switch"
+            }
+            return false
+        })
+        #expect(!trace.contains { event in
+            if case let .followFocusToParkedWindow(token, _, decision) = event.kind {
+                return token == fx.targetEntry.token &&
+                    decision == "skip reason=causeless_external_overlay_close"
+            }
+            return false
+        })
     }
 }

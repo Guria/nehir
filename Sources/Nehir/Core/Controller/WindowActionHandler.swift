@@ -546,25 +546,93 @@ final class WindowActionHandler {
         // interaction workspace, the target window still lives there, and the
         // user has not explicitly established a different window meanwhile.
         let explicitStampAtSchedule = controller.axEventHandler.lastExplicitManagedConfirmationToken
+        Self.recordCompletionFocusScheduled(
+            controller: controller,
+            context: "navigate_window",
+            token: token,
+            stampAtSchedule: explicitStampAtSchedule
+        )
         controller.layoutRefreshController
             .commitWorkspaceTransition(reason: .workspaceTransition) { [weak self, weak controller] in
-                guard let self,
-                      let controller,
-                      self.navigationGeneration == expectedNavigationGeneration,
-                      controller.interactionWorkspace()?.id == workspaceId,
-                      controller.workspaceManager.visibleWorkspaceIds().contains(workspaceId),
-                      controller.workspaceManager.entry(for: token)?.workspaceId == workspaceId,
-                      Self.completionFocusStillCurrent(
-                          token: token,
-                          stampAtSchedule: explicitStampAtSchedule,
-                          stampNow: controller.axEventHandler.lastExplicitManagedConfirmationToken
-                      )
-                else {
+                guard let self, let controller else { return }
+                let generationMatches = self.navigationGeneration == expectedNavigationGeneration
+                let interactionWorkspaceMatches = controller.interactionWorkspace()?.id == workspaceId
+                let workspaceVisible = controller.workspaceManager.visibleWorkspaceIds().contains(workspaceId)
+                let targetStillInWorkspace = controller.workspaceManager.entry(for: token)?.workspaceId == workspaceId
+                let preconditionsSatisfied = generationMatches
+                    && interactionWorkspaceMatches
+                    && workspaceVisible
+                    && targetStillInWorkspace
+                guard Self.completionFocusShouldExecute(
+                    controller: controller,
+                    context: "navigate_window",
+                    token: token,
+                    stampAtSchedule: explicitStampAtSchedule,
+                    preconditionsSatisfied: preconditionsSatisfied,
+                    preconditionFields: [
+                        RuntimeDecisionTraceField("generationMatches", generationMatches),
+                        RuntimeDecisionTraceField("interactionWorkspaceMatches", interactionWorkspaceMatches),
+                        RuntimeDecisionTraceField("workspaceVisible", workspaceVisible),
+                        RuntimeDecisionTraceField("targetStillInWorkspace", targetStillInWorkspace)
+                    ]
+                ) else {
                     return
                 }
                 controller.focusWindow(token, reason: .windowActionRefreshCompletion)
             }
         return true
+    }
+
+    private static func recordCompletionFocusScheduled(
+        controller: WMController,
+        context: String,
+        token: WindowToken,
+        stampAtSchedule: WindowToken?
+    ) {
+        controller.diagnostics.recordRuntimeDecisionEvent(
+            named: "window_action_focus_completion",
+            cluster: "focus_arbitration"
+        ) {
+            [
+                RuntimeDecisionTraceField("phase", "scheduled"),
+                RuntimeDecisionTraceField("context", context),
+                RuntimeDecisionTraceField("targetToken", token),
+                RuntimeDecisionTraceField("stampAtSchedule", stampAtSchedule)
+            ]
+        }
+    }
+
+    private static func completionFocusShouldExecute(
+        controller: WMController,
+        context: String,
+        token: WindowToken,
+        stampAtSchedule: WindowToken?,
+        preconditionsSatisfied: Bool = true,
+        preconditionFields: [RuntimeDecisionTraceField] = []
+    ) -> Bool {
+        let stampNow = controller.axEventHandler.lastExplicitManagedConfirmationToken
+        let stampAllowsFocus = completionFocusStillCurrent(
+            token: token,
+            stampAtSchedule: stampAtSchedule,
+            stampNow: stampNow
+        )
+        let shouldExecute = preconditionsSatisfied && stampAllowsFocus
+        controller.diagnostics.recordRuntimeDecisionEvent(
+            named: "window_action_focus_completion",
+            cluster: "focus_arbitration"
+        ) {
+            [
+                RuntimeDecisionTraceField("phase", "fired"),
+                RuntimeDecisionTraceField("context", context),
+                RuntimeDecisionTraceField("targetToken", token),
+                RuntimeDecisionTraceField("stampAtSchedule", stampAtSchedule),
+                RuntimeDecisionTraceField("stampNow", stampNow),
+                RuntimeDecisionTraceField("preconditionsSatisfied", preconditionsSatisfied),
+                RuntimeDecisionTraceField("stampAllowsFocus", stampAllowsFocus),
+                RuntimeDecisionTraceField("decision", shouldExecute ? "execute" : "yield")
+            ] + preconditionFields
+        }
+        return shouldExecute
     }
 
     /// A deferred window-action focus completion is stale once the user has
@@ -700,15 +768,22 @@ final class WindowActionHandler {
             controller.layoutRefreshController.stopScrollAnimation(for: sourceMonitor.displayId)
         }
         let explicitStampAtSchedule = controller.axEventHandler.lastExplicitManagedConfirmationToken
+        Self.recordCompletionFocusScheduled(
+            controller: controller,
+            context: "summon_right_cross_workspace",
+            token: token,
+            stampAtSchedule: explicitStampAtSchedule
+        )
         controller.layoutRefreshController.commitWorkspaceTransition(
             affectedWorkspaces: [sourceWorkspaceId, targetWorkspaceId],
             reason: .workspaceTransition
         ) { [weak controller] in
             guard let controller,
-                  Self.completionFocusStillCurrent(
+                  Self.completionFocusShouldExecute(
+                      controller: controller,
+                      context: "summon_right_cross_workspace",
                       token: token,
-                      stampAtSchedule: explicitStampAtSchedule,
-                      stampNow: controller.axEventHandler.lastExplicitManagedConfirmationToken
+                      stampAtSchedule: explicitStampAtSchedule
                   )
             else {
                 return
@@ -739,12 +814,19 @@ final class WindowActionHandler {
             )
         )
         let explicitStampAtSchedule = controller.axEventHandler.lastExplicitManagedConfirmationToken
+        Self.recordCompletionFocusScheduled(
+            controller: controller,
+            context: "commit_summoned_window_focus",
+            token: token,
+            stampAtSchedule: explicitStampAtSchedule
+        )
         controller.layoutRefreshController.requestRefresh(reason: .layoutCommand) { [weak controller] in
             guard let controller,
-                  Self.completionFocusStillCurrent(
+                  Self.completionFocusShouldExecute(
+                      controller: controller,
+                      context: "commit_summoned_window_focus",
                       token: token,
-                      stampAtSchedule: explicitStampAtSchedule,
-                      stampNow: controller.axEventHandler.lastExplicitManagedConfirmationToken
+                      stampAtSchedule: explicitStampAtSchedule
                   )
             else {
                 return
