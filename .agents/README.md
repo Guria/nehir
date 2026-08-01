@@ -45,6 +45,10 @@ listed in the order the work usually moves through them.
   every git action still gated.
 - `/nehir-review-triage <findings>` — classify findings against the current code
   as confirmed, stale, or false positive before fixing anything.
+- `/nehir-capture-landed-state [#NN]` — after the merge: prove the change is on
+  `main`, record what actually landed including deviations and leftovers, then
+  update and move the plans-branch documents into the folder matching their
+  state.
 
 `argument-hint` ordering convention: every workflow reads the whole invocation
 through `$ARGUMENTS`, so the hint's order is advice to the human, not a

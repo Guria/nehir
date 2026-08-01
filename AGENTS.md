@@ -7,11 +7,11 @@ Instructions for AI agents working in this repository.
 `.agents/` holds the skills, fence text, and gate hook scripts for this
 repository; `.agents/README.md` documents them. Five gate skills activate on
 their own at the moment their rule applies (tests, git mutations, success
-claims, fix robustness, durable documents). Five workflows run only when invoked
+claims, fix robustness, durable documents). Six workflows run only when invoked
 as slash commands: `/nehir-bug-discovery`, `/nehir-retry-with-new-trace`,
-`/nehir-delegate-lane`, `/nehir-finalize-change`, `/nehir-review-triage`. The
-rules below remain authoritative; the skills are how they reach the point of
-decision.
+`/nehir-delegate-lane`, `/nehir-finalize-change`, `/nehir-review-triage`,
+`/nehir-capture-landed-state`. The rules below remain authoritative; the skills
+are how they reach the point of decision.
 
 ## Plans branch instructions
 
