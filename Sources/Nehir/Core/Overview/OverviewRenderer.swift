@@ -471,7 +471,7 @@ enum OverviewRenderer {
 
     private static func truncateText(_ text: String, font: CTFont, maxWidth: CGFloat) -> String {
         var result = text
-        while result.count > 0 {
+        while !result.isEmpty {
             let attributes: [NSAttributedString.Key: Any] = [.font: font]
             let attrString = NSAttributedString(string: result + "...", attributes: attributes)
             let line = CTLineCreateWithAttributedString(attrString)

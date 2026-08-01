@@ -141,20 +141,6 @@ struct CanonicalTOMLConfig: Codable, Equatable {
             enum CodingKeys: String, CodingKey, CaseIterable {
                 case red, green, blue, alpha
             }
-
-            init(
-                red: Double,
-                green: Double,
-                blue: Double,
-                alpha: Double,
-                unknownFields: [String: SettingsTOMLUnknownValue] = [:]
-            ) {
-                self.red = red
-                self.green = green
-                self.blue = blue
-                self.alpha = alpha
-                self.unknownFields = unknownFields
-            }
         }
     }
 

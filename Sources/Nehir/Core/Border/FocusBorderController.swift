@@ -330,7 +330,7 @@ final class FocusBorderController {
         }
 
         if target.isManaged,
-           (controller.workspaceManager.isAppFullscreenActive || isManagedWindowFullscreen(target.token))
+           controller.workspaceManager.isAppFullscreenActive || isManagedWindowFullscreen(target.token)
         {
             return .hide
         }

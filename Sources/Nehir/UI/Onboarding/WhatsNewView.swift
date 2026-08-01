@@ -10,8 +10,8 @@ struct WhatsNewView: View {
     let version: String
     let sections: [WhatsNewContent.Section]
     let onDismiss: () -> Void
-    var onRerunOnboarding: (() -> Void)? = nil
-    var onOpenDiagnostics: (() -> Void)? = nil
+    var onRerunOnboarding: (() -> Void)?
+    var onOpenDiagnostics: (() -> Void)?
 
     @State private var settingsIssues: [SettingsDiagnosticsIssue] = []
 

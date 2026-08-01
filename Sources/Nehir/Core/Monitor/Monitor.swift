@@ -379,7 +379,7 @@ enum DockReservation {
 
         let derivedInset = axDerivedInset(frame: frame, orientation: effectiveOrientation)
 
-        if (liveLeftInset > 0.5 || liveRightInset > 0.5), dockBar != nil, !dockBarIntersectsThisDisplay {
+        if liveLeftInset > 0.5 || liveRightInset > 0.5, dockBar != nil, !dockBarIntersectsThisDisplay {
             lock.lock()
             stickyInset[displayId] = nil
             lock.unlock()

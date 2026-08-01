@@ -489,7 +489,7 @@ import QuartzCore
         applyAnimationDirectives(plan.animationDirectives)
     }
 
-    private func executeRefreshExecutionPlan(_ plan: RefreshExecutionPlan) async {
+    private func executeRefreshExecutionPlan(_ plan: RefreshExecutionPlan) {
         guard let controller else { return }
 
         layoutState.didExecuteRefreshExecutionPlan = true

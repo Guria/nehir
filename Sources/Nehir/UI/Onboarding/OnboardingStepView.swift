@@ -14,7 +14,7 @@ struct OnboardingStepView<Animation: View, Control: View>: View {
 
     let onContinue: () -> Void
     let onBack: () -> Void
-    var onOpenSettings: (() -> Void)? = nil
+    var onOpenSettings: (() -> Void)?
 
     private var canGoBack: Bool {
         stepIndex > 0

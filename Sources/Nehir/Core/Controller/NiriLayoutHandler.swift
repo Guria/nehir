@@ -2633,7 +2633,7 @@ enum NiriWindowMoveResult {
         in workspaceId: WorkspaceDescriptor.ID
     ) -> Bool {
         var didMove = false
-        withNiriWorkspaceContext(for: workspaceId) { engine, wsId, motion, state, monitor, workingFrame, gaps in
+        withNiriWorkspaceContext(for: workspaceId) { engine, wsId, motion, state, _, workingFrame, gaps in
             guard let source = engine.findNode(for: handle) else { return }
             guard let target = engine.findNode(for: targetHandle) else { return }
             didMove = engine.insertWindowByMove(
@@ -2657,7 +2657,7 @@ enum NiriWindowMoveResult {
         in workspaceId: WorkspaceDescriptor.ID
     ) -> Bool {
         var didMove = false
-        withNiriWorkspaceContext(for: workspaceId) { engine, wsId, motion, state, monitor, workingFrame, gaps in
+        withNiriWorkspaceContext(for: workspaceId) { engine, wsId, motion, state, _, workingFrame, gaps in
             guard let window = engine.findNode(for: handle) else { return }
             didMove = engine.insertWindowInNewColumn(
                 window,

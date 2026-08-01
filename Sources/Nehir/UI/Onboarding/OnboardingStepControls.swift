@@ -92,7 +92,7 @@ struct AccessibilityStepControl: View {
 /// support, all rendered as `DoneStepLinkCard` rows.
 struct DoneStepControl: View {
     let isGranted: Bool
-    var onShowWhatsNew: (() -> Void)? = nil
+    var onShowWhatsNew: (() -> Void)?
 
     var body: some View {
         VStack(spacing: 10) {

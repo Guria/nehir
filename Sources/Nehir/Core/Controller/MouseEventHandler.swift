@@ -723,8 +723,8 @@ final class MouseEventHandler {
         state.debugCounters.queuedTransientEvents += 1
 
         if let existing = state.pendingTapEvents.scrollPayload,
-           (!existing.matches(modifiers: modifiers, momentumPhase: momentumPhase, phase: phase)
-               || !existing.canCoalesce(deltaX: deltaX, deltaY: deltaY))
+           !existing.matches(modifiers: modifiers, momentumPhase: momentumPhase, phase: phase)
+               || !existing.canCoalesce(deltaX: deltaX, deltaY: deltaY)
         {
             flushPendingTapEvents()
         }

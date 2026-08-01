@@ -761,9 +761,9 @@ private struct HotkeyBindingRow: View {
 private struct HotkeyBindingControl: View {
     let binding: HotkeyTrigger
     let commandName: String
-    var displayText: String? = nil
-    var accessibilityText: String? = nil
-    var canRemove: Bool? = nil
+    var displayText: String?
+    var accessibilityText: String?
+    var canRemove: Bool?
     let isRecording: Bool
     let onStartRecording: () -> Void
     let onCaptured: (KeyBinding) -> Void

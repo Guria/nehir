@@ -68,7 +68,7 @@ struct SettingsSliderRow: View {
     var valueWidth: CGFloat = 56
     /// Fired when an edit begins/ends. The row commits its own draft on drag end
     /// regardless, so this is purely for optional side effects.
-    var onEditingChanged: ((Bool) -> Void)? = nil
+    var onEditingChanged: ((Bool) -> Void)?
 
     /// Buffered while dragging so each tick does not write through to `value`
     /// (which would trigger per-tick `didSet` saves and side effects on the main

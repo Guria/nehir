@@ -202,7 +202,7 @@ final class NiriLayoutEngine {
 
     var presetColumnWidths: [PresetSize] = NiriLayoutEngine.defaultPresetColumnWidths
     var presetWindowHeights: [PresetSize] = NiriLayoutEngine.defaultPresetWindowHeights
-    var defaultColumnWidth: CGFloat? = nil
+    var defaultColumnWidth: CGFloat?
 
     var resizeTraceSink: ((String) -> Void)?
     private(set) var resizeCommandGeneration: UInt64 = 0

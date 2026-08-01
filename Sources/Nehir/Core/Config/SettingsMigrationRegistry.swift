@@ -300,7 +300,7 @@ private func stripComment(_ line: String) -> String {
             isEscaped.toggle()
             continue
         }
-        if (character == "\"" || character == "'"), !isEscaped {
+        if character == "\"" || character == "'", !isEscaped {
             quote = quote == character ? nil : (quote ?? character)
         }
         if character == "#", quote == nil {
@@ -315,7 +315,7 @@ private func stripComment(_ line: String) -> String {
 private func unquotedString(_ value: String) -> String? {
     guard value.count >= 2,
           let first = value.first,
-          (first == "\"" || first == "'"),
+          first == "\"" || first == "'",
           value.last == first
     else { return nil }
     return String(value.dropFirst().dropLast())

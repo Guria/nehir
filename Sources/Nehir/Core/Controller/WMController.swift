@@ -1694,8 +1694,8 @@ final class WMController {
             if let focusedMonitorId = createPlacementContext?.focusedMonitorId {
                 if let frameMonitor,
                    frameMonitor.id != focusedMonitorId,
-                   (createPlacementContext?.interactionMonitorId == nil
-                       || createPlacementContext?.interactionMonitorId == frameMonitor.id),
+                   createPlacementContext?.interactionMonitorId == nil
+                       || createPlacementContext?.interactionMonitorId == frameMonitor.id,
                    let workspace = workspaceManager.activeWorkspaceOrFirst(on: frameMonitor.id)
                 {
                     return WorkspacePlacementTarget(
@@ -1723,8 +1723,8 @@ final class WMController {
                let activeWorkspace = workspaceManager.activeWorkspace(on: interactionMonitorId),
                let focusedWorkspaceId = createPlacementContext?.focusedWorkspaceId,
                activeWorkspace.id != focusedWorkspaceId,
-               (createPlacementContext?.focusedMonitorId == nil
-                   || createPlacementContext?.focusedMonitorId == interactionMonitorId)
+               createPlacementContext?.focusedMonitorId == nil
+                   || createPlacementContext?.focusedMonitorId == interactionMonitorId
             {
                 return WorkspacePlacementTarget(
                     workspaceId: activeWorkspace.id,

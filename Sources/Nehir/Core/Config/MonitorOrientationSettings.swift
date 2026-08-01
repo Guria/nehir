@@ -12,7 +12,7 @@ struct MonitorOrientationSettings: MonitorSettingsType {
     }
 
     var monitorName: String
-    var monitorDisplayId: CGDirectDisplayID? = nil
-    var monitorAnchorPoint: CGPoint? = nil
+    var monitorDisplayId: CGDirectDisplayID?
+    var monitorAnchorPoint: CGPoint?
     var orientation: Monitor.Orientation?
 }
