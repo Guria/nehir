@@ -1,12 +1,32 @@
 # Finder inline rename is cancelled by managed focus recovery
 
-- **Nehir issue:** #179 — "[Bug] Unable to rename files or directories in Finder"
-- **Status:** candidate cause identified; **not** implemented, **not** confirmed
-- **Reported on:** Nehir 0.6.0-rc.37, rc.38, rc.39, rc.40; macOS 27 Public Beta 1;
-  MacBook Air M1
-- **Source verified against:** Nehir `main` at commit `38503d91`
-- **Workaround recorded in issue #179:** trigger rename with Return instead of
-  the context-menu "Rename" item.
+- **Nehir issue:** #179 — "[Bug] Unable to rename files or directories in Finder"; closed automatically when PR #193 merged on 2026-07-31.
+- **Status:** completed — shipped on `main` in `90f47c04` ("Stop admitting non-window parented surfaces as managed windows"), merged 2026-07-31 via PR #193, contained in `v0.6.0-rc.43`. The user confirmed the Finder context-menu rename reproduction before merge. Moved from `discovery/` to `completed/` on 2026-08-01.
+- **Reported on:** Nehir 0.6.0-rc.37 through rc.40; macOS 27 Public Beta 1; MacBook Air M1.
+- **Original source baseline:** Nehir `main` at `38503d91`.
+- **Workaround recorded in issue #179:** trigger rename with Return instead of the context-menu "Rename" item.
+
+## Landed state
+
+`WindowRuleEngine.presentsAsUserAddressableAXWindowSurface` is now the shared
+predicate used by parented-surface admission and workspace-bar projection. A
+parented surface whose AX fetch succeeded but whose role is not `AXWindow` is
+classified by the built-in `nonWindowParentedSurface` rule as unmanaged. Failed
+AX fetches retain the managed-floating fallback so unknown metadata is not
+misread as proof that a real child window is non-standard.
+
+This implements the discovery's first proposed change and was sufficient for
+#179. The broader second proposal — suppressing every managed fronting operation
+while an arbitrary same-application transient owns focus — did not ship in PR
+#193; the shared surface predicate removes the causative layout refresh without
+adding that wider focus policy.
+
+The release note is
+`.changeset/20260729134729-renaming-a-file-from-finder-s-context-menu-works.md`
+with contributor `dagrlx`, the issue reporter. No dedicated Finder regression
+test file landed; the change is covered by the shared rule path and the user's
+confirmed context-menu reproduction. PR #193's CI ran `mise run test`
+successfully (`Swift tests`, 3m38s) and passed `SwiftLint + SwiftFormat` (43s).
 
 ## Symptom
 
@@ -224,13 +244,16 @@ editor surface is never admitted, or no `focusNextWindow` request targets the
 parent window ahead of the editor's removal. In that case the dismissal has a
 different actor and this document should be discarded.
 
-## Proposed direction (not implemented; requires approval)
+## Pre-implementation proposal and landed deviation
 
-The invariant to enforce: **a WindowServer child surface that is not a standard
-AX window is not a managed window, and managed focus recovery does not front a
-window while another surface of the same application legitimately holds focus.**
+The investigation proposed the invariant: **a WindowServer child surface that
+is not a standard AX window is not a managed window, and managed focus recovery
+does not front a window while another surface of the same application
+legitimately holds focus.**
 
-Two changes, addressing the shared mechanisms rather than Finder specifically:
+It considered two changes. PR #193 shipped the first and left the second out of
+scope because removing the false managed admission also removes the layout
+refresh that triggered the observed focus recovery:
 
 1. **Tighten the parented-surface admission rule.** In
    `WindowRuleEngine.parentedWindowServerSurfaceDecision`
@@ -286,9 +309,10 @@ evidence flags (`transientWindowServerEvidence`,
 `create_retry_scheduled` retry cadence observed for `windowId 19002`. These are
 worth separate consideration and should not ride along with this fix.
 
-## Verification check for a future capture
+## Runtime confirmation
 
-If the fix is attempted, the decisive check in a fresh capture is whether any
-`window_admitted` record appears for a `com.apple.finder` surface with
-`role=AXTextField` during a context-menu rename. Absence of that record, together
-with a rename that stays editable, is what would establish the behavior as fixed.
+Before PR #193 merged, the user repeated the Finder context-menu reproduction
+and confirmed that the rename editor stayed editable. The implementation's
+source invariant is that no `window_admitted` record can be produced for a
+parented `com.apple.finder` surface whose successful AX facts identify
+`role=AXTextField`; such a surface is classified as unmanaged instead.

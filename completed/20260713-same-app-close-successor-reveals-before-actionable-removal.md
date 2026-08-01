@@ -1,6 +1,6 @@
 # Same-app close successor reveals before actionable removal
 
-**Status:** actionable discovery; failure ordering confirmed, repair signal not yet selected
+**Status:** completed — shipped on `main` in `ca152b28` ("Stabilize focus arbitration around overlays and window teardown") and `b0bca2f6` ("Harden overlay lifecycle and focus recovery"), merged 2026-07-31 via PR #193, contained in `v0.6.0-rc.43`. The user confirmed the off-screen same-app close reproduction before merge. Moved from `discovery/` to `completed/` on 2026-08-01.
 
 ## Scope
 
@@ -13,6 +13,39 @@ It does **not** establish:
 - that the observed AX token `82494:48771` and model token `82494:48769` are interchangeable identities;
 - that a longer fixed delay would repair the race; or
 - that the Quick Terminal discoveries and this failure have the same event ordering.
+
+## Landed state
+
+The implementation did not add a longer fixed delay or infer identity from the
+raw destroy token. Before accepting an unrelated no-request
+`focusedWindowChanged` successor from the same pid, Nehir now asynchronously
+enumerates the app's AX windows and checks the previously confirmed managed
+token:
+
+- if the predecessor is still present, the event is an ordinary same-app window
+  switch and is retried;
+- if the predecessor is absent, it is preserved as the close-removal seed so the
+  existing spatial fallback can select near the closing column;
+- if a non-managed interaction occurs while the probe is pending, the probe does
+  not overwrite that newer interaction;
+- stale probes are discarded when focus/request/recovery state has changed.
+
+The user confirmed both sides of the contract: closing a window whose app
+immediately selects an off-screen same-app successor no longer drags the
+viewport there, and ordinary same-app window/profile switches still work.
+
+The user-facing note is
+`.changeset/20260729134729-closing-the-ghostty-quick-terminal-no-longer-scr.md`
+with no contributor entry. The focused coverage is
+`Tests/NehirTests/SameAppCloseFocusSuccessionTests.swift`; supporting focus and
+replacement coverage is in
+`Tests/NehirTests/ManagedReplacementFocusReconciliationTests.swift` and
+`Tests/NehirTests/FocusedCreateStabilizationTests.swift`. PR #193's CI ran
+`mise run test` successfully (`Swift tests`, 3m38s) and passed
+`SwiftLint + SwiftFormat` (43s).
+
+The cross-app close-successor policy remains separate and open in
+[`../discovery/20260709-window-close-successor-app-activation-reveals-far-parked-column.md`](../discovery/20260709-window-close-successor-app-activation-reveals-far-parked-column.md).
 
 ## Observed topology
 
@@ -230,25 +263,26 @@ Nehir already has a pid-keyed, 0.6-second `focusedWindowLossClosePrecursor` (`So
 
 The activation and removal evidence both recorded the precursor as `nil`. Therefore the missing-focused-window arming path did not run in this failure. A proposal to add another workspace-keyed precursor would be unsupported unless a new pre-acceptance signal is first identified and shown to distinguish this close from a legitimate same-app focus change.
 
-## Repair requirements, not a selected design
+## Repair requirements and implementation choice
 
-A valid implementation plan needs a proven signal available before successor acceptance that can distinguish:
+The required pre-acceptance distinction was between a close-related transition,
+where selected model token `w48769` must remain the removal anchor, and a genuine
+user-driven same-app switch to `w42790`, which must still be honored.
 
-- this close-related transition, where selected model token `w48769` must remain the recovery anchor until removal; from
-- a genuine user-driven same-app focus change to `w42790`, which must still be honored.
+The landed AX-enumeration probe supplies that evidence without equating the raw
+destroy token with the selected model token. It asks whether the already-known
+predecessor entry still exists in the app's authoritative AX window inventory.
+This avoided every unsupported direction identified during discovery:
 
-Any candidate design must also establish how the AX/runtime token involved in destruction maps to the selected model token before using it as closing-token evidence. Candidate-ordering helpers or adjacent-column fallbacks are not sufficient on their own: they are safe only after the closing model identity is proved and excluded from successor selection.
+- it does not suppress all same-app parked focus changes;
+- overlay capability alone is not treated as proof of a close;
+- no longer fixed delay was added; and
+- no second precursor keyed from the same absent signal was introduced.
 
-The evidence does not justify:
+## Validation outcome
 
-- suppressing all same-app parked focus changes;
-- treating overlay capability alone as proof of a close;
-- extending the 120 ms delay without an evidence-based completion condition; or
-- adding a new precursor keyed differently but armed from the same absent signal.
-
-## Validation requirements
-
-A future fix should be accepted only with a capture that demonstrates the actual overlap:
+The landed focused tests exercise the overlap and its controls, and the user's
+real reproduction confirmed the viewport outcome. The acceptance criteria were:
 
 1. column 11 is selected and confirmed before the close-related successor event;
 2. `w42790` arrives before actionable removal of `w48769`;
@@ -262,6 +296,6 @@ A no-scroll run without the overlapping ordering above is not sufficient validat
 
 ## Relationship to existing discoveries
 
-- [`20260709-window-close-successor-app-activation-reveals-far-parked-column.md`](20260709-window-close-successor-app-activation-reveals-far-parked-column.md) shares the symptom and desired close-successor policy, but its cross-app activation ordering is different. It is a policy sibling, not proof of the same mechanism.
-- [`../completed/20260706-stable-viewport-on-window-close-recovery.md`](../completed/20260706-stable-viewport-on-window-close-recovery.md) covers the post-removal close-recovery machinery that arrived too late here.
-- [`../completed/20260709-quick-terminal-long-open-close-reveals-parked-ghostty-viewport.md`](../completed/20260709-quick-terminal-long-open-close-reveals-parked-ghostty-viewport.md) and [`../completed/20260710-quick-terminal-close-after-restart-lacks-overlay-evidence.md`](../completed/20260710-quick-terminal-close-after-restart-lacks-overlay-evidence.md) cover Quick Terminal-specific paths. This discovery does not claim their reproduction conditions or event ordering.
+- [`../discovery/20260709-window-close-successor-app-activation-reveals-far-parked-column.md`](../discovery/20260709-window-close-successor-app-activation-reveals-far-parked-column.md) shares the symptom and desired close-successor policy, but its cross-app activation ordering is different. It is a policy sibling, not proof of the same mechanism.
+- [`20260706-stable-viewport-on-window-close-recovery.md`](20260706-stable-viewport-on-window-close-recovery.md) covers the post-removal close-recovery machinery that arrived too late here.
+- [`20260709-quick-terminal-long-open-close-reveals-parked-ghostty-viewport.md`](20260709-quick-terminal-long-open-close-reveals-parked-ghostty-viewport.md) and [`20260710-quick-terminal-close-after-restart-lacks-overlay-evidence.md`](20260710-quick-terminal-close-after-restart-lacks-overlay-evidence.md) cover Quick Terminal-specific paths. This discovery does not claim their reproduction conditions or event ordering.

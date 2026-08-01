@@ -1,18 +1,46 @@
 # Quick-terminal close can still reveal the managed Ghostty column
 
-Groom 2026-07-07: still applicable — remaining quick-terminal-coexistence regression; no `completed/`/`planned/` match. Related same-app-close / settled-spring viewport work (`7a8febb4`, `ca7ac372`, `196dee9a`) landed but does not specifically address Ghostty overlay post-close AX churn revealing the parked column — re-verify against current source before acting.
+**Status:** completed — shipped on `main` in `acbebfbd` ("Carry window identity through tab churn and steady the overlay-close focus"), `ca152b28` ("Stabilize focus arbitration around overlays and window teardown"), and `b0bca2f6` ("Harden overlay lifecycle and focus recovery"), merged 2026-07-31 via PR #193, contained in `v0.6.0-rc.43`. The user confirmed the Quick Terminal close reproduction before merge. Moved from `discovery/` to `completed/` on 2026-08-01.
 
-Status: discovery + implementation plan. Verified against `main` commit `61a67ba4`
-(`nehir v61a67b*` in the captures) on 2026-07-02.
+The capture baseline was `main` at `61a67ba4` on 2026-07-02. The 2026-07-07
+groom correctly identified that the earlier same-app-close and settled-spring
+work did not cover this overlay post-close activation shape; PR #193 supplied
+the missing recognized-overlay lifecycle.
 
-A rare regression remains in the quick-terminal coexistence fixes: when Ghostty's
-Quick Terminal is dismissed, Nehir can still interpret Ghostty's post-close AX
-focus churn as focus on the regular managed Ghostty window, then reveal that
-managed window's parked column. The visible symptom is a same-workspace viewport
-scroll to Ghostty even though the user only closed the overlay.
+The 2026-07-02 capture documented a rare regression in the quick-terminal
+coexistence fixes: when Ghostty's Quick Terminal was dismissed, Nehir could
+interpret Ghostty's post-close AX focus churn as focus on the regular managed
+Ghostty window, then reveal that managed window's parked column. The visible
+symptom was a same-workspace viewport scroll to Ghostty even though the user had
+only closed the overlay.
 
 All runtime evidence below is inlined. This document does not depend on any
 machine-local trace file surviving.
+
+## Landed state
+
+The original proposal below suggested a short-lived generic overlay-evidence
+TTL. That design did not ship. `main` instead records window ids recognized by
+the built-in overlay rule and derives an explicit lifecycle from ordered-in
+state, last ordered-in observation, recognized non-managed focus, and overlay
+destroy. Managed same-pid activation suppression, viewport pins, destroy
+liveness, and the close anchor all consult that lifecycle rather than generic
+non-managed focus residue.
+
+This preserves the startup control: ordinary level-zero Ghostty windows remain
+managed, while an overlay already present when Nehir starts can be discovered
+through WindowServer sampling before activation arbitration. The user confirmed
+that closing Quick Terminal no longer reveals the parked regular Ghostty column
+or moves the viewport away from their selected window.
+
+The release note is
+`.changeset/20260729134729-closing-the-ghostty-quick-terminal-no-longer-scr.md`
+with no contributor entry. Relevant tests landed in
+`Tests/NehirTests/QuickTerminalStartupLifecycleTests.swift`,
+`Tests/NehirTests/QuickTerminalCloseAnchorTests.swift`, and
+`Tests/NehirTests/QuickTerminalPointerIntentTests.swift`. PR #193's CI ran
+`mise run test` successfully (`Swift tests`, 3m38s) and passed
+`SwiftLint + SwiftFormat` (43s).
 
 ---
 
@@ -288,7 +316,13 @@ close/hide ordering race and use it to suppress the immediately following
 
 ---
 
-## Implementation plan
+## Historical implementation proposal and landed deviation
+
+The numbered proposal is retained as a rejected design record. PR #193 did not
+add `RecentUnmanagedOverlayEvidence` or a 500–1000 ms suppression TTL. Its
+recognized-window lifecycle is narrower: menus and arbitrary non-managed
+surfaces cannot manufacture overlay evidence, and a reusable hidden panel is
+not considered active merely because its WindowServer id remains resolvable.
 
 ### 1. Add recent app-owned overlay evidence keyed by pid
 
@@ -375,10 +409,10 @@ hard-coded `SkyLight.shared.queryAllVisibleWindows()` call in
 `hasVisibleSamePidOverlayWindow` with an injectable provider so the existing
 live-overlay guard can be regression-tested too.
 
-### 5. Validation
+### 5. Validation outcome
 
-Manual validation should capture three cases with evidence inlined into the
-implementation PR notes:
+The landed tests and the user's real reproduction covered the three controls
+this proposal identified:
 
 - Quick Terminal close from a stable workspace with Ghostty parked offscreen: no
   managed focus change to Ghostty, no `didReveal=true`, viewport remains at the

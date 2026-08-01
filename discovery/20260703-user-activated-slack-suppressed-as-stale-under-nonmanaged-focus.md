@@ -336,7 +336,7 @@ the workarounds.
 
 ## Why this is not the same as prior findings
 
-- `discovery/20260702-quick-terminal-close-reveals-managed-ghostty-column.md`
+- `completed/20260702-quick-terminal-close-reveals-managed-ghostty-column.md`
   concerns reveal behavior of *already managed* windows around the same
   quick-terminal overlay; this finding is about a window that never became
   managed at all.

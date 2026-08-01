@@ -125,7 +125,7 @@ not steal the view (close-successor suppression preserved).
   observed. If a background app is seen stealing the view, narrow layer 1
   further (e.g. also require the app to be frontmost).
 - Quick-terminal close must not reveal/steal a workspace — still covered by the
-  close-successor path (`discovery/20260702-quick-terminal-close-reveals-managed-ghostty-column.md`).
+  close-successor path (`completed/20260702-quick-terminal-close-reveals-managed-ghostty-column.md`).
 - Sticky/PiP windows are excluded from follow-focus (`hasStickyWindowSource`).
 - Floating windows are excluded from follow-focus (no niri node to select).
 

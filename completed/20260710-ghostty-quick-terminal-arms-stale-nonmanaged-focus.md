@@ -121,7 +121,7 @@ Recovery requires an action that still produces a managed focus confirmation:
   discovery documented its NF-1 side effect: the suppressed activation was also
   the only signal that would have cleared non-managed focus. The landed fix
   above preserves the viewport behavior.
-- [`../discovery/20260702-quick-terminal-close-reveals-managed-ghostty-column.md`](../discovery/20260702-quick-terminal-close-reveals-managed-ghostty-column.md)
+- [`20260702-quick-terminal-close-reveals-managed-ghostty-column.md`](20260702-quick-terminal-close-reveals-managed-ghostty-column.md)
   and [`20260615-quick-terminal-close-switches-workspace.md`](20260615-quick-terminal-close-switches-workspace.md)
   — earlier quick-terminal close/overlay lineage.
 - [`../discovery/20260705-move-focused-window-to-workspace-noop-under-nonmanaged-focus.md`](../discovery/20260705-move-focused-window-to-workspace-noop-under-nonmanaged-focus.md)

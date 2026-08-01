@@ -1,9 +1,9 @@
 # Quick-terminal session churns the viewport: competing motion actors with no episode owner
 
-**Status:** actionable. Captured on 2026-07-28 against `main` with the
-quick-terminal close anchor (`overlayCloseAnchorAssert`) already shipped.
-Four same-day captures are inlined below; no machine-local trace is required
-to follow the findings.
+**Status:** completed — shipped on `main` in `acbebfbd` ("Carry window identity through tab churn and steady the overlay-close focus"), `ca152b28` ("Stabilize focus arbitration around overlays and window teardown"), and `b0bca2f6` ("Harden overlay lifecycle and focus recovery"), merged 2026-07-31 via PR #193, contained in `v0.6.0-rc.43`. The user confirmed the Quick Terminal → Cmd+N → close reproduction before merge. Moved from `discovery/` to `completed/` on 2026-08-01.
+
+Four captures from 2026-07-28 remain inlined below; no machine-local trace is
+required to follow the findings.
 
 ## Product invariant this discovery serves
 
@@ -14,9 +14,53 @@ Stated by the user as the primary requirement, above focus correctness:
 3. Commands (resize and the like) must act on the window the user is looking
    at. Focus is secondary to the two rules above.
 
-None of the shipped mechanisms encode this invariant. Each shipped guard
-suppresses one specific motion source while the others keep racing, so the
-observed outcome per repro run is decided by event timing.
+At the 2026-07-28 `main` state captured by this discovery, no mechanism encoded this
+invariant. Each guard suppressed one motion source while the others kept
+racing, so the observed outcome varied with event timing.
+
+## Landed state
+
+PR #193 did not implement the companion plan's 250 ms deferred-activation
+queue. The landed mechanism instead makes the recognized overlay lifecycle the
+shared evidence boundary:
+
+- recognized overlay window ids and ordered-in/destroy observations define a
+  `beforeDestroy` / `recentlyDestroyed` lifecycle;
+- a cause-less cross-pid restore during `beforeDestroy` cannot trigger a parked
+  workspace follow or viewport reveal;
+- the recognized overlay destroy runs the existing anchor correction against
+  the newest explicit managed confirmation;
+- a later activation after destroy is handled as fresh user intent;
+- same-app focus succession probes the predecessor's AX liveness before
+  accepting and revealing a successor, preserving ordinary same-app switches
+  while preventing a close-selected far window from moving the viewport.
+
+This differs from the selected repair direction below: confirmation can record
+native focus reality, but the harmful follow/reveal effects are withheld. No
+`deferredOverlayCloseActivationsByOverlayPid`, replay payload, or new 250 ms
+behavioral deadline exists on `main`.
+
+The user confirmed that open Quick Terminal → Cmd+N → close leaves focus and the
+viewport on the intended Ghostty window. They also confirmed that closing a
+window whose app immediately selects an off-screen same-app successor no longer
+moves the viewport there, while ordinary same-app window/profile switches still
+work.
+
+The release note is
+`.changeset/20260729134729-closing-the-ghostty-quick-terminal-no-longer-scr.md`
+with no contributor entry. Relevant tests landed in
+`Tests/NehirTests/QuickTerminalCloseAnchorTests.swift`,
+`Tests/NehirTests/QuickTerminalPointerIntentTests.swift`,
+`Tests/NehirTests/QuickTerminalStartupLifecycleTests.swift`, and
+`Tests/NehirTests/SameAppCloseFocusSuccessionTests.swift`. PR #193's CI ran
+`mise run test` successfully (`Swift tests`, 3m38s) and passed
+`SwiftLint + SwiftFormat` (43s).
+
+The insertion-relayout actor was deliberately left unchanged and is now tracked
+separately in
+[`../discovery/20260801-insertion-relayout-lacks-minimal-displacement-targeting.md`](../discovery/20260801-insertion-relayout-lacks-minimal-displacement-targeting.md).
+The Window-menu redirect remains open in
+[`../discovery/20260729-window-menu-same-app-pick-redirected-to-other-apps-stable-window.md`](../discovery/20260729-window-menu-same-app-pick-redirected-to-other-apps-stable-window.md).
 
 ## Common topology of all four captures
 
@@ -43,7 +87,7 @@ are written by four independent actors:
 | 1 | Column-insertion relayout | new window admitted (`layoutRefreshRememberedFocus` request) | scroll to the new column's snap | reveal pins gate only `scrollToReveal`, not relayout scroll |
 | 2 | Cause-less restore + parked-follow | Ghostty's on-hide re-activation of the browser | `followFocusToParkedWindowWorkspaceIfNeeded` → `activateWorkspace` scroll + reveal | `isWithinSameAppCloseRecoveryWindow(pid:)` keys on the browser's pid; close evidence is on Ghostty's pid (`AXEventHandler.swift:6477`) |
 | 3 | Overlay-close anchor | destroy of recognized overlay window (`AXEventHandler.swift:6616`) | its own focus request (+ its reveal) | yields to any active focus request (`activeFocusRequestToken == nil` guard, `AXEventHandler.swift:6624`) — including one opened by actor 2 |
-| 4 | Preservation pins | spring/gesture/close-recovery state | suppress *some* reveal passes | see [`20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md`](20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md) — a Boolean gate with no completion contract |
+| 4 | Preservation pins | spring/gesture/close-recovery state | suppress *some* reveal passes | see [`../discovery/20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md`](../discovery/20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md) — a Boolean gate with no completion contract |
 
 Which actor wins the viewport, which wins OS focus, and which wins the layout
 selection/command target is a per-run race. The four captures below are four
@@ -185,13 +229,13 @@ Two independent sub-defects compound it:
    restore it exists to correct (Capture A), and when it does fire, nothing
    retracts the loser's already-queued work (Capture D's request 336).
 
-## Repair direction: freeze at close-detect, arbitrate once (chosen 2026-07-28)
+## Repair direction selected on 2026-07-28 (superseded in implementation)
 
 An earlier draft of this section proposed freezing Nehir-ordered viewport
 motion for the whole overlay session (from overlay-frontmost to destroy).
 The user rejected that scope: while the overlay is up, everything must behave
-as today — the insertion relayout scroll to a Cmd+N window, user commands and
-swipes all stay live. The freeze applies only to the **close handoff**.
+as in the 2026-07-28 baseline — the insertion relayout scroll to a Cmd+N
+window, user commands and swipes all stay live. The freeze applies only to the **close handoff**.
 
 That works because the close has an observable early edge. In all four
 captures the first close event is not the overlay's destroy but the owner's
@@ -220,9 +264,9 @@ handoff:
    scroll already ran under the overlay, the anchor column is normally
    visible → zero motion at close.
 3. **Resolve on timeout** (~200–300 ms, no destroy): this was a genuine
-   click/Cmd-Tab to another app; replay the deferred activation exactly as
-   today. Cost: an imperceptible delay on a real app switch that happens to
-   race an open overlay.
+   click/Cmd-Tab to another app; replay the deferred activation as in the
+   2026-07-28 baseline. Cost: an imperceptible delay on a real app switch that
+   happens to race an open overlay.
 4. **Retraction stays required**: arming must also prevent (or resolution
    must cancel) queued follow-ups from the deferred activation — Capture D's
    surviving `activateWorkspace` request is the counterexample.
@@ -232,10 +276,11 @@ discarded, the anchor wins uncontested, zero close motion, no split-brain;
 B and C — the browser-restore round-trip disappears, leaving only the
 under-overlay insertion scroll.
 
-Independently of the episode mechanism, the insertion relayout scroll should
-adopt minimal-displacement targeting in general — Capture B shows it moving a
-full column width when the inserted column was already flush with the right
-screen edge. That is a separate, smaller fix.
+Independently of the episode mechanism, Capture B established that insertion
+relayout lacked minimal-displacement targeting: it moved a full column width
+when the inserted column was already flush with the right screen edge. PR #193
+did not change that path; the retained follow-up is
+[`../discovery/20260801-insertion-relayout-lacks-minimal-displacement-targeting.md`](../discovery/20260801-insertion-relayout-lacks-minimal-displacement-targeting.md).
 
 ### Product decision (resolved)
 
@@ -246,16 +291,16 @@ Cmd+N flow. The residual case — the user manually scrolled away from the
 anchor during the overlay session — is resolved in favour of **zero motion**:
 the user just expressed a viewport preference, and snapping back would be the
 churn this work removes. The anchor still takes selection and focus;
-[`20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md`](20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md)'s
+[`../discovery/20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md`](../discovery/20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md)'s
 scroll-away contract already covers this shape. The no-new-window control
 (open and hide without Cmd+N) is strict zero motion throughout.
 
-## Validation requirements
+## Pre-merge validation contract
 
-A validating capture of the full repro (overlay open → Cmd+N → overlay hide)
-must show:
+The pre-merge validation contract for the full reproduction (overlay open →
+Cmd+N → overlay hide) required:
 
-1. under the overlay, behaviour unchanged from today: the insertion scroll to
+1. under the overlay, behavior unchanged from the 2026-07-28 baseline: the insertion scroll to
    the Cmd+N column runs, and user commands/gestures act normally;
 2. the cause-less restore is deferred, not processed: no
    `follow_focus_to_parked_window … decision=switch` and no
@@ -276,8 +321,9 @@ Controls:
   discarded and the anchor no-ops on the preserved pre-overlay token.
 - **Genuine app switch racing an overlay**: click/Cmd-Tab to another app
   while the overlay is visible and no destroy follows — the deferred
-  activation must replay after the timeout and produce today's exact
-  behaviour (confirmation, reveal, workspace activation as applicable).
+  activation was required to replay after the timeout and reproduce the
+  2026-07-28 baseline behavior (confirmation, reveal, workspace activation as
+  applicable).
 - **Manual scroll-away during overlay, then close**: viewport stays where the
   user put it; the anchor takes selection/focus without a snap-back reveal.
 
@@ -288,7 +334,7 @@ Controls:
   Capture A here shows the anchor being pre-empted by Nehir's own reaction to
   that restore; its "fixed and confirmed" status holds only for the topology
   where the user's window stays on-screen.
-- [`20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md`](20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md)
+- [`../discovery/20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md`](../discovery/20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md)
   documents actor 4's structural defect (suppression without a completion
   contract). The episode transaction proposed here is the "single accountable
   owner" that discovery's repair boundary calls for, applied to the overlay
@@ -296,6 +342,6 @@ Controls:
 - [`20260702-quick-terminal-close-reveals-managed-ghostty-column.md`](20260702-quick-terminal-close-reveals-managed-ghostty-column.md)
   is the earliest same-shape finding: overlay close causing an unwanted
   reveal of a managed column.
-- [`../completed/20260706-stable-viewport-on-window-close-recovery.md`](../completed/20260706-stable-viewport-on-window-close-recovery.md)
+- [`20260706-stable-viewport-on-window-close-recovery.md`](20260706-stable-viewport-on-window-close-recovery.md)
   owns the close-recovery pins that partially (and insufficiently) protect
   the viewport in Captures B–D.

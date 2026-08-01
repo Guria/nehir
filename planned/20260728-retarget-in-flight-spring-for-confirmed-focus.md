@@ -72,7 +72,7 @@ Only `.parked` overrides `.springInFlight`. A clipped target is not stranded off
 - `Sources/Nehir/Core/Layout/Niri/NiriLayoutEngine+ViewportCommands.swift`
 - `completed/20260701-focus-confirm-skips-reveal-while-prior-spring-settles.md`
 - `completed/20260706-stable-viewport-on-window-close-recovery.md`
-- `discovery/20260713-same-app-close-successor-reveals-before-actionable-removal.md`
+- `completed/20260713-same-app-close-successor-reveals-before-actionable-removal.md`
 
 ## Do-not-touch fences
 

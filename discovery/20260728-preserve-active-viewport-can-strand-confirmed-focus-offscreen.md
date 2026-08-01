@@ -131,7 +131,7 @@ reason=ax_focus_confirm_reveal_skipped
   preserveActiveViewportReason=already_confirmed_focused_window_changed
 ```
 
-This sequence proves the gate is upstream of the engine, but it does **not** prove that deduplication caused this occurrence. The first pass reached `scrollToReveal`; its `didReveal=false` result was the scroll-lock failure documented in [`20260728-scroll-lock-suppresses-hotkey-focus-reveal.md`](20260728-scroll-lock-suppresses-hotkey-focus-reveal.md). The second pass was a true duplicate and did not change the outcome.
+This sequence proves the gate is upstream of the engine, but it does **not** prove that deduplication caused this occurrence. The first pass reached `scrollToReveal`; its `didReveal=false` result was the scroll-lock failure documented in [`../completed/20260728-scroll-lock-leaves-focused-window-offscreen.md`](../completed/20260728-scroll-lock-leaves-focused-window-offscreen.md). The second pass was a true duplicate and did not change the outcome.
 
 It follows that a lower-level parked-target repair can solve this exact capture, because the first non-preserved pass exists. A different capture is required to prove that preservation can consume every opportunity to reveal.
 
@@ -365,7 +365,7 @@ A no-scroll result is not sufficient. The capture must prove whether the accepte
 
 ## Relationships
 
-- [`20260728-scroll-lock-suppresses-hotkey-focus-reveal.md`](20260728-scroll-lock-suppresses-hotkey-focus-reveal.md) owns the lower-level `didReveal=false` result from Capture A. This discovery begins one layer above it.
+- [`../completed/20260728-scroll-lock-leaves-focused-window-offscreen.md`](../completed/20260728-scroll-lock-leaves-focused-window-offscreen.md) owns the lower-level `didReveal=false` result from Capture A. This discovery begins one layer above it.
 - [`20260627-trackpad-fling-snap-overshoot-to-neighbor-column.md`](20260627-trackpad-fling-snap-overshoot-to-neighbor-column.md) contains a correct spring-preservation example: focus was confirmed on the same neighbor column the spring was already approaching. Together the captures show why `.springInFlight` must be conditioned on destination visibility rather than always enabled or always disabled.
 - [`../completed/20260706-stable-viewport-on-window-close-recovery.md`](../completed/20260706-stable-viewport-on-window-close-recovery.md) owns the intentional close-recovery pins and stable-target policy.
-- [`20260713-same-app-close-successor-reveals-before-actionable-removal.md`](20260713-same-app-close-successor-reveals-before-actionable-removal.md) owns the opposite close-recovery failure: missing recovery evidence allowed a parked successor to reveal before actionable removal. That finding is why `.closeRecoveryPin` cannot simply yield to every parked target.
+- [`../completed/20260713-same-app-close-successor-reveals-before-actionable-removal.md`](../completed/20260713-same-app-close-successor-reveals-before-actionable-removal.md) owns the opposite close-recovery failure: missing recovery evidence allowed a parked successor to reveal before actionable removal. That finding is why `.closeRecoveryPin` cannot simply yield to every parked target.

@@ -1,11 +1,10 @@
 # Defer the cause-less cross-app restore while an overlay close is resolving
 
-**Status:** planned
-**Source discovery:** `discovery/20260728-overlay-close-viewport-churn-competing-motion-actors.md`
-**Related:** `discovery/20260726-browser-reactivation-overrides-new-ghostty-selection.md`
-(shipped anchor this plan unblocks),
-`discovery/20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md`
-(scroll-away contract the resolved product decision leans on).
+**Status:** completed — shipped on `main` in `acbebfbd` ("Carry window identity through tab churn and steady the overlay-close focus"), `ca152b28` ("Stabilize focus arbitration around overlays and window teardown"), and `b0bca2f6` ("Harden overlay lifecycle and focus recovery"), merged 2026-07-31 via PR #193, contained in `v0.6.0-rc.43`. Moved from `planned/` to `completed/` on 2026-08-01.
+
+**Source discovery:** [`20260728-overlay-close-viewport-churn-competing-motion-actors.md`](20260728-overlay-close-viewport-churn-competing-motion-actors.md)
+
+**Related:** [`20260726-browser-reactivation-overrides-new-ghostty-selection.md`](20260726-browser-reactivation-overrides-new-ghostty-selection.md), [`../discovery/20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md`](../discovery/20260728-preserve-active-viewport-can-strand-confirmed-focus-offscreen.md), and [`../discovery/20260801-insertion-relayout-lacks-minimal-displacement-targeting.md`](../discovery/20260801-insertion-relayout-lacks-minimal-displacement-targeting.md).
 
 All file/line references verified against the main Nehir source tree on
 2026-07-28. Re-verify before editing; line numbers drift.
@@ -21,18 +20,55 @@ request silences the shipped overlay-close anchor
 (`assertManagedAnchorAfterOverlayClose`, guard at
 `Sources/Nehir/Core/Controller/AXEventHandler.swift:6624`).
 
-Fix: **defer, don't process**. A cause-less external activation that arrives
-while a recognized overlay of a *different*, overlay-capable pid is visible
-is held for a short resolving window. If the overlay's destroy arrives, the
-deferred activation is discarded and the anchor arbitrates uncontested with
-zero viewport motion. If no destroy arrives before the timeout, the
-activation replays exactly as today (it was a genuine app switch).
+The plan proposed deferring the whole activation and replaying it after a
+250 ms deadline. That exact timer-and-payload mechanism did **not** ship.
+Instead, `main` records the recognized overlay's lifecycle and treats a
+cause-less cross-pid restore as provisional while the overlay is in its
+pre-destroy phase: focus reality may be confirmed, but parked-workspace follow
+and viewport reveal are suppressed; the recognized overlay destroy then runs
+the existing close-anchor correction. A later app activation after destroy is
+fresh user intent and is not delayed.
 
-Behaviour while the overlay is up is intentionally unchanged: the insertion
-scroll to a Cmd+N window, user commands and gestures all stay live. Only the
-close handoff is frozen.
+Behaviour while the overlay is up remains unchanged: insertion of a Cmd+N
+window, user commands, and gestures stay live. The user confirmed on the real
+reproduction that open Quick Terminal → Cmd+N → close preserves the selected
+Ghostty window and does not scroll the viewport away and back.
 
-## Trigger predicate (arm condition)
+## Landed state
+
+The implementation is distributed across three commits on `main`:
+
+- `acbebfbd` introduced confirmation classification, recognized-overlay
+  identity, and the destroy-time anchor;
+- `ca152b28` replaced generic pid-level/non-managed evidence with explicit
+  overlay lifecycle, guarded pointer intent and same-app succession, and added
+  the focused regression suites;
+- `b0bca2f6` bounded teardown verification and made the lifecycle sampling and
+  visibility checks deterministic and lazy.
+
+The plan's `deferredOverlayCloseActivationsByOverlayPid` state, 250 ms replay
+task, and "latest activation wins" payload did not ship. Avoiding that timer was
+an intentional deviation: the landed code uses ordered-in state, the last
+ordered-in observation, recognized overlay focus, and the destroy event as the
+lifecycle boundary instead of creating another activation queue.
+
+The user-visible release note is
+`.changeset/20260729134729-closing-the-ghostty-quick-terminal-no-longer-scr.md`;
+it has no contributor entry. Relevant landed tests are
+`Tests/NehirTests/QuickTerminalCloseAnchorTests.swift`,
+`Tests/NehirTests/QuickTerminalPointerIntentTests.swift`,
+`Tests/NehirTests/QuickTerminalStartupLifecycleTests.swift`, and
+`Tests/NehirTests/SameAppCloseFocusSuccessionTests.swift`. PR #193's CI ran
+`mise run test` successfully (`Swift tests`, 3m38s) and passed the
+`SwiftLint + SwiftFormat` check (43s).
+
+The separate insertion-relayout minimal-displacement question did not ship in
+PR #193 and is retained in
+[`../discovery/20260801-insertion-relayout-lacks-minimal-displacement-targeting.md`](../discovery/20260801-insertion-relayout-lacks-minimal-displacement-targeting.md).
+The Window-menu redirect remains open in
+[`../discovery/20260729-window-menu-same-app-pick-redirected-to-other-apps-stable-window.md`](../discovery/20260729-window-menu-same-app-pick-redirected-to-other-apps-stable-window.md).
+
+## Proposed trigger predicate (superseded)
 
 All of the following, evaluated on the activation event before its downstream
 processing:
@@ -59,7 +95,7 @@ activated pid — the structural miss of
 `isWithinSameAppCloseRecoveryWindow(pid:)` (`AXEventHandler.swift:6477`)
 that let the restore through in every capture.
 
-## Mechanism
+## Proposed mechanism (superseded)
 
 Model on the existing defer-until-resolving-event pattern
 (`deferredSameAppActiveNativeActivationTokens`,
@@ -87,8 +123,8 @@ Model on the existing defer-until-resolving-event pattern
    `recognizedOverlayWindowIdsByPid[destroyedPid]` contains the windowId; if
    a deferral for that overlay pid exists, remove it (invalidating the
    timeout via the generation counter), emit
-   `reason=overlay_close_restore_discarded`, then run the anchor assert as
-   today. The anchor's `activeFocusRequestToken == nil` guard
+   `reason=overlay_close_restore_discarded`, then run the anchor assert as in
+   the 2026-07-28 baseline. The anchor's `activeFocusRequestToken == nil` guard
    (`AXEventHandler.swift:6624`) is left untouched — the deferral is what
    guarantees it passes.
 4. **Resolve on timeout:** if the deferral is still present after 250 ms,
@@ -104,7 +140,7 @@ Model on the existing defer-until-resolving-event pattern
    `axEventHandler` memory snapshot line
    (`RuntimeDiagnosticsCoordinator.swift:751` region) like the sibling sets.
 
-## Files to touch
+## Proposed files (superseded)
 
 - `Sources/Nehir/Core/Controller/AXEventHandler.swift` — new state, arm
   predicate + cross-pid visible-overlay helper, deferral/resolve/replay,
@@ -143,8 +179,8 @@ Model on the existing defer-until-resolving-event pattern
 - **A genuine app switch during a visible overlay is delayed 250 ms.** The
   arm predicate requires a cause-less, request-less activation while a
   recognized overlay of another pid is on screen — a narrow situation where
-  today's behaviour is already wrong more often than right. The replay path
-  preserves exact current semantics.
+  the 2026-07-28 baseline behavior was already wrong more often than right. The
+  replay path preserves that baseline's semantics.
 - **Overlay destroy never arrives (owner crashes with overlay up).** The
   timeout replays the activation; the pid-terminated cleanup drops orphaned
   deferrals.
@@ -162,7 +198,7 @@ below are recorded for that later phase:
    another pid, overlay destroy within the window → activation never
    processed; anchor assert runs with no active request; no viewport motion.
 2. Deferred-then-replayed: same arm, no destroy → after the timeout the
-   activation processes with today's exact downstream effects.
+   activation processes with the 2026-07-28 baseline downstream effects.
 3. Echo immunity: an activation with non-nil `selfFrontingAgeMs` or a
    matching request is never deferred.
 4. No-overlay control: identical activation with no recognized overlay
@@ -175,7 +211,7 @@ discovery's validation section: `overlay_close_restore_deferred` followed by
 `activateWorkspace` request for the restored app; final
 `wmCommandTarget` = anchor; genuine-switch and no-new-window controls green.
 
-## Commit shape
+## Proposed commit shape
 
 Plain-English subjects (no Conventional Commits), e.g.:
 

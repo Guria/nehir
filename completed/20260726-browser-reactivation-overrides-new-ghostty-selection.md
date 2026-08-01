@@ -1,9 +1,6 @@
 # Quick-terminal close steals the newly created window's focus, selection and resize target
 
-**Status:** root cause identified, fixed, and confirmed on the real repro
-(2026-07-28). Regression tests landed alongside the fix; the branch is not yet
-merged, so this note stays in `discovery/` until it ships. Verified against
-`main` on 2026-07-28.
+**Status:** completed — shipped on `main` in `acbebfbd` ("Carry window identity through tab churn and steady the overlay-close focus"), `ca152b28` ("Stabilize focus arbitration around overlays and window teardown"), and `b0bca2f6` ("Harden overlay lifecycle and focus recovery"), merged 2026-07-31 via PR #193, contained in `v0.6.0-rc.43`. The user confirmed the real reproduction on 2026-07-28. Moved from `discovery/` to `completed/` on 2026-08-01.
 
 The investigation ran through three successive understandings, all recorded
 below because the discarded ones carry the load-bearing lessons:
@@ -24,14 +21,45 @@ The original title referred to the browser because that was the first
 (incorrect) reading; the mechanism is app-agnostic and reproduces with any
 neighboring application.
 
-## Executive verdict
+## Landed record
 
-Creating a regular window from the Ghostty quick terminal (Cmd+N) and then
-closing the quick terminal leaves focus, the Niri selection, and therefore the
-command target on a *neighboring* window. Column-width commands then resize that
-neighbor, because `cycleSize` deliberately targets `selectedNodeId`.
+The merged implementation preserves the two-part diagnosis:
 
-Two independent paths produce this, and both had to be fixed:
+1. verified destroys now converge into managed-replacement correlation rather
+   than directly removing a live/replacing entry; and
+2. overlay close correction keys on the recognized overlay window's identity
+   and the newest explicit managed confirmation, while cause-less restore
+   follow/reveal work is suppressed during the overlay's pre-destroy lifecycle.
+
+The landed anchor is materially different from the reverted anchor attempt
+recorded below. It does not arm on arbitrary destroys from an overlay-capable
+pid, and machine-issued focus requests cannot overwrite the explicit
+confirmation stamp used to select the anchor. Pointer-confirmed focus can be
+adopted without issuing another native focus request.
+
+The release note is
+`.changeset/20260729134729-closing-the-ghostty-quick-terminal-no-longer-scr.md`
+with no contributor entry. Tests landed in
+`Tests/NehirTests/QuickTerminalCloseAnchorTests.swift`,
+`Tests/NehirTests/QuickTerminalPointerIntentTests.swift`,
+`Tests/NehirTests/QuickTerminalStartupLifecycleTests.swift`,
+`Tests/NehirTests/ManagedReplacementFocusReconciliationTests.swift`, and
+`Tests/NehirTests/SameAppCloseFocusSuccessionTests.swift`. PR #193's CI ran
+`mise run test` successfully (`Swift tests`, 3m38s) and passed
+`SwiftLint + SwiftFormat` (43s).
+
+The remaining Window-menu redirect is not covered by this landing and stays in
+[`../discovery/20260729-window-menu-same-app-pick-redirected-to-other-apps-stable-window.md`](../discovery/20260729-window-menu-same-app-pick-redirected-to-other-apps-stable-window.md).
+
+## Pre-landing executive verdict
+
+In the 2026-07-26 reproduction, creating a regular window from the Ghostty quick
+terminal (Cmd+N) and then closing the quick terminal left focus, the Niri
+selection, and therefore the command target on a *neighboring* window.
+Column-width commands then resized that neighbor because `cycleSize`
+deliberately targets `selectedNodeId`.
+
+Two independent paths produced the result, and PR #193 corrected both:
 
 **Path A — Nehir removes a live window (Nehir's own defect).** While the quick
 terminal closes, Ghostty transiently drops its regular window from the AX tree.
@@ -153,7 +181,7 @@ Ghostty target.
 
 At `11:00:18`, an external `workspaceDidActivateApplication` event resolves to
 Helium `79206:173`. The activation gate records all the facts needed to show why
-current guards miss it:
+the 2026-07-26 guards missed it:
 
 ```text
 token=WindowToken(pid: 79206, windowId: 173)
@@ -639,11 +667,11 @@ Both external app-level sources (`workspaceDidActivateApplication` and
 first would let the other path mark the unwanted restore as explicit and
 defeat the assert.
 
-## Validation and shipped state (2026-07-28)
+## Validation before merge and landed state
 
-The fix is confirmed on the real repro. It ships on the
-`quick-terminal-close-selection-theft` branch as five behaviour commits plus
-regression tests:
+The user confirmed the real reproduction on 2026-07-28. The implementation was
+then incorporated into PR #193 and shipped on `main` in `v0.6.0-rc.43` as the
+commits named in the status line. Its behavior and diagnostic layers include:
 
 - self-attributing focus-activation traces (`self_fronting_age_ms`,
   timestamped create-focus ring, `ensureFocusedTokenValid` branch tracing);
@@ -729,7 +757,7 @@ close/overlay evidence maps feeding per-shape guards. Every additional memory
 or reactive guard increases the number of writers racing for the same
 authority. The fix must *reduce* the number of arbiters, not add one.
 
-## Design requirements for the actual fix
+## Design requirements derived from the reverted attempts
 
 1. **Removal-driven focus recovery must yield to an in-flight same-pid
    replacement.** When the removed window's pid has a pending
@@ -737,7 +765,7 @@ authority. The fix must *reduce* the number of arbiters, not add one.
    correlation window), `focusNextWindow` recovery must defer until the burst
    resolves; the replacement window's own admission/confirmation then makes
    recovery unnecessary. Only when no replacement materializes does recovery
-   run as today (a genuine close still needs it).
+   run as in the 2026-07-26 capture baseline (a genuine close still needs it).
 2. **Machine-issued focus requests are not user intent.** `focusNextWindow`
    (and `layoutRefreshRememberedFocus`) requests must never displace a fresher
    explicit confirmation; their target resolution must re-validate against the
@@ -848,7 +876,7 @@ let overlayVisible = hasVisibleSamePidOverlayWindow(for: entry)
 For the observed browser entry, `entry.pid` is Helium `79206`, not overlay owner
 Ghostty `912`. The gate therefore reports `recentNonManagedFocus=false`,
 `overlayCapablePid=false`, and `overlayVisible=false` even though the sequence
-started under a recognized Ghostty overlay. The current evidence model cannot
+started under a recognized Ghostty overlay. The 2026-07-26 evidence model could not
 associate a cross-app return-to-origin activation with the overlay handoff that
 preceded it.
 
@@ -953,8 +981,9 @@ selection.
    to 65% to 95%; Ghostty remained at 50%.
 6. After explicit navigation selected Ghostty, resize commands 3 and 4 targeted
    window 205 correctly.
-7. Current source contains the exact permissive same-workspace path and the exact
-   selected-node resize path required for this sequence.
+7. Source at the 2026-07-26 investigation baseline contains the exact
+   permissive same-workspace path and the exact selected-node resize path
+   required for this sequence.
 8. A controlled repetition in which Command+N and quick-terminal close were
    separate operations reproduced the sequence with regular Ghostty window
    `912:562`.
@@ -981,31 +1010,31 @@ explicit user app switch.
 
 ## Relationship to existing discoveries
 
-- [`20260713-resize-command-target-offscreen-selection.md`](20260713-resize-command-target-offscreen-selection.md)
+- [`../discovery/20260713-resize-command-target-offscreen-selection.md`](../discovery/20260713-resize-command-target-offscreen-selection.md)
   establishes the shared downstream rule: sizing trusts `selectedNodeId`. That
   discovery's selection divergence came from focus validation restoring an
   offscreen token. Here selection is changed by an accepted cross-app activation,
   so this is a new arming path, not a duplicate root.
-- [`20260718-sibling-click-focus-never-observed-no-reveal-resize-stale-target.md`](20260718-sibling-click-focus-never-observed-no-reveal-resize-stale-target.md)
+- [`../discovery/20260718-sibling-click-focus-never-observed-no-reveal-resize-stale-target.md`](../discovery/20260718-sibling-click-focus-never-observed-no-reveal-resize-stale-target.md)
   also ends with resize following stale selection, but there the intended focus
   notification never arrived. Here the intended Ghostty confirmation did arrive;
   a later browser activation overwrote it.
-- [`20260709-window-close-successor-app-activation-reveals-far-parked-column.md`](20260709-window-close-successor-app-activation-reveals-far-parked-column.md)
+- [`../discovery/20260709-window-close-successor-app-activation-reveals-far-parked-column.md`](../discovery/20260709-window-close-successor-app-activation-reveals-far-parked-column.md)
   is the closest policy sibling: a cross-app successor activation is treated as
   a real app switch. Its trigger is a managed-window close and its visible result
   is a far-column reveal. This capture has no managed-window removal before the
   target theft; it is a new-window/overlay handoff on the same active workspace.
   A fix keyed only to recent managed-window destruction would not cover it.
-- [`../completed/20260709-quick-terminal-long-open-close-reveals-parked-ghostty-viewport.md`](../completed/20260709-quick-terminal-long-open-close-reveals-parked-ghostty-viewport.md)
+- [`20260709-quick-terminal-long-open-close-reveals-parked-ghostty-viewport.md`](20260709-quick-terminal-long-open-close-reveals-parked-ghostty-viewport.md)
   fixed same-app Ghostty focus redirects around quick-terminal open/close. Its
   guards are intentionally same-pid and therefore do not catch the Helium
   cross-app return in this capture.
-- [`../completed/20260710-ghostty-quick-terminal-arms-stale-nonmanaged-focus.md`](../completed/20260710-ghostty-quick-terminal-arms-stale-nonmanaged-focus.md)
+- [`20260710-ghostty-quick-terminal-arms-stale-nonmanaged-focus.md`](20260710-ghostty-quick-terminal-arms-stale-nonmanaged-focus.md)
   fixed non-managed focus remaining armed after a suppressed same-app redirect.
   Here non-managed focus clears correctly when Ghostty is confirmed; the failure
   is the later cross-app overwrite.
 
-## Compatibility constraints for a future plan
+## Compatibility constraints preserved by the landed implementation
 
 1. Preserve genuine user-driven Dock, Cmd-Tab, launcher, and click app switches,
    including activation of existing-but-untracked windows. This is the behavior
@@ -1023,15 +1052,15 @@ explicit user app switch.
    The distinguishing evidence must include causality or corroboration, not only
    recency.
 
-## Investigation and fix boundary
+## Alternative fix boundaries considered before landing
 
 The narrow source boundary is the `.unrelatedNoRequest` branch for
 `workspaceDidActivateApplication` in `AXEventHandler.handleAppActivation`, before
 `handleManagedAppActivation` is allowed to replace a different, freshly confirmed
 managed target on the same active workspace.
 
-A plan should evaluate mechanisms that retain genuine app-switch behavior while
-requiring additional evidence for this contradictory handoff, for example:
+The investigation evaluated mechanisms that retain genuine app-switch behavior
+while requiring additional evidence for this contradictory handoff, including:
 
 - a short-lived post-confirmation handoff record containing the confirmed token,
   pid, request id, admission/create context, and prior non-managed overlay owner;
@@ -1044,11 +1073,11 @@ requiring additional evidence for this contradictory handoff, for example:
 
 The controlled reproduction now proves that the event follows a separate overlay
 close, has no Nehir managed-focus request behind it, and agrees with live native
-reality (`app_frontmost=true`, `app_focused_window=173`). Additional decision
-tracing should therefore concentrate on the remaining causality gap: sequence the
-quick-terminal destruction, NSWorkspace notification, frontmost-pid transition,
-focused AX-window transition, active-request completion, most recent managed
-confirmation, and overlay-handoff owner.
+reality (`app_frontmost=true`, `app_focused_window=173`). The landed diagnostics consequently sequence the quick-terminal destruction,
+activation source, frontmost/focused native observations, active-request
+completion, managed-confirmation classification, and overlay lifecycle. That
+observability was retained because the app-level notification itself still does
+not carry activation cause.
 
 The behavioral invariant is independent of which native component initiates the
 switch: a cause-less app notification must not silently replace a newer explicit
