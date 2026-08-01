@@ -724,7 +724,7 @@ final class MouseEventHandler {
 
         if let existing = state.pendingTapEvents.scrollPayload,
            !existing.matches(modifiers: modifiers, momentumPhase: momentumPhase, phase: phase)
-               || !existing.canCoalesce(deltaX: deltaX, deltaY: deltaY)
+           || !existing.canCoalesce(deltaX: deltaX, deltaY: deltaY)
         {
             flushPendingTapEvents()
         }
