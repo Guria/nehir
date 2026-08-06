@@ -52,14 +52,19 @@ it forward with a softened qualifier.
 
 ## 3. Read the new trace as first-class evidence
 
-Observe before explaining, exactly as in a fresh discovery: concrete events,
-numeric state, window tokens, workspace and monitor identifiers, reproduction
-topology. Cite `file:line` for every source claim.
+Observe before explaining, exactly as in a fresh discovery: inventory which
+channels the capture contains, then record concrete events, numeric state,
+window tokens, workspace and monitor identifiers, reproduction topology. Cite
+`file:line` for every source claim. Bind each relied-on event to its source
+emitter before interpreting it (see `nehir-claim-discipline`).
 
 Compare against the values **inlined in the existing discovery document**, not
 against a previous trace file and not against memory. If a needed value was
 never inlined, that is a defect in the document — inline it now from the
 evidence at hand or mark it unavailable.
+
+Keep user testimony that the new capture does not corroborate labeled as
+`unverified user testimony`; do not promote it into the causal argument.
 
 State plainly whether the symptom kept the same shape or changed shape. A
 changed shape is a finding, not a detail.

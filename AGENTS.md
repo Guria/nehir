@@ -127,6 +127,9 @@ do not require permission.
 Match every claim to the evidence actually available:
 
 - Source, trace, screenshot, and command output establish **observations**.
+- User-reported symptoms with no matching event in the capture are **user
+  testimony**, not observations — label them and do not use them as causal
+  evidence.
 - A build or check establishes only that the named command passed.
 - A code edit establishes only that the code changed.
 - Runtime behavior is `fixed`, `working`, or `resolved` only after the user
@@ -136,7 +139,10 @@ Report mechanically verified facts plainly and precisely, but do not promote
 them into behavioral success. Until runtime confirmation, use calibrated terms
 such as `hypothesis`, `implemented but unconfirmed`, or `candidate cause`, and
 state the concrete observation that would falsify the claim. Never assert that
-an artifact contains evidence you have not read.
+an artifact contains evidence you have not read. Bind each relied-on trace
+event to its source emitter before interpreting it; engine-computed or
+scheduled state is not on-screen effect. Do not invent reproduction steps from
+a hypothesis when the timeline or topology makes them impossible.
 
 ## Solution robustness over hacks
 
