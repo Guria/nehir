@@ -3,4 +3,4 @@
 
 ---
 
-Rescale column widths when the connected display changes, so docking or undocking no longer leaves columns at the pixel width they had on the previous monitor.
+Rescale proportionally sized columns when the connected display changes, so docking or undocking no longer leaves them at the pixel width they had on the previous monitor. Fullscreen and lone windows already filled the new screen and are unaffected.
