@@ -7828,4 +7828,87 @@ private func makeCenteredCrossMonitorFixture(
         #expect(controller.niriLayoutHandler.scrollAnimationByDisplay[monitor.displayId] == nil)
         #expect(controller.workspaceManager.hiddenState(for: token)?.workspaceInactive == true)
     }
+
+    /// Swapping the connected display (dock/undock) must drop cached column spans.
+    /// `Monitor.ID` is the CGDirectDisplayID, so an external monitor and the built-in
+    /// panel are never the same key: the per-monitor size-change check in
+    /// `updateMonitors` sees no surviving monitor resize and would leave every column
+    /// holding pixel widths resolved against the display that went away.
+    @Test func swappingMonitorsInvalidatesCachedColumnSpans() {
+        let engine = NiriLayoutEngine()
+        let workspaceId = UUID()
+        let root = NiriRoot(workspaceId: workspaceId)
+        engine.roots[workspaceId] = root
+
+        let column = NiriContainer()
+        column.width = .proportion(0.5)
+        root.appendChild(column)
+
+        let external = makeTestMonitor(displayId: 900, name: "External", x: 0)
+        let builtIn = makeTestMonitor(displayId: 901, name: "Built-in", x: 0)
+
+        engine.updateMonitors([external])
+        column.resolveAndCacheWidth(workingAreaWidth: external.visibleFrame.width, gaps: 0)
+        let widthOnExternal = column.cachedWidth
+        #expect(widthOnExternal > 0)
+
+        // Undock: the external display is replaced by the built-in panel.
+        engine.updateMonitors([builtIn])
+
+        #expect(column.cachedWidth == 0)
+    }
+
+    /// The pre-existing behaviour this fix must not regress: a monitor that stays
+    /// connected but changes working area (e.g. the Dock reservation appearing) still
+    /// invalidates cached spans.
+    @Test func resizingWorkingAreaOfSameMonitorInvalidatesCachedColumnSpans() {
+        let engine = NiriLayoutEngine()
+        let workspaceId = UUID()
+        let root = NiriRoot(workspaceId: workspaceId)
+        engine.roots[workspaceId] = root
+
+        let column = NiriContainer()
+        column.width = .proportion(0.5)
+        root.appendChild(column)
+
+        let full = makeTestMonitor(displayId: 902, name: "Display", x: 0)
+        engine.updateMonitors([full])
+        column.resolveAndCacheWidth(workingAreaWidth: full.visibleFrame.width, gaps: 0)
+        #expect(column.cachedWidth > 0)
+
+        let reserved = Monitor(
+            id: full.id,
+            displayId: full.displayId,
+            frame: full.frame,
+            visibleFrame: full.frame.insetBy(dx: 0, dy: 40),
+            hasNotch: false,
+            name: full.name
+        )
+        engine.updateMonitors([reserved])
+
+        #expect(column.cachedWidth == 0)
+    }
+
+    /// A no-op reconfiguration must not thrash the cache: repeated notifications with an
+    /// unchanged monitor set leave resolved spans alone.
+    @Test func unchangedMonitorSetKeepsCachedColumnSpans() {
+        let engine = NiriLayoutEngine()
+        let workspaceId = UUID()
+        let root = NiriRoot(workspaceId: workspaceId)
+        engine.roots[workspaceId] = root
+
+        let column = NiriContainer()
+        column.width = .proportion(0.5)
+        root.appendChild(column)
+
+        let monitor = makeTestMonitor(displayId: 903, name: "Display", x: 0)
+        engine.updateMonitors([monitor])
+        column.resolveAndCacheWidth(workingAreaWidth: monitor.visibleFrame.width, gaps: 0)
+        let resolved = column.cachedWidth
+        #expect(resolved > 0)
+
+        engine.updateMonitors([monitor])
+
+        #expect(column.cachedWidth == resolved)
+    }
 }
