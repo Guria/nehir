@@ -164,42 +164,62 @@ CI.
   - `focusedHandle == inactiveHandle` (observed: `nil`)
   - the same two again after a 180 ms wait
   - `currentBorderTarget()?.token == inactiveToken` (observed: `nil`)
-- **Production mechanism:** the test drives `handleAppActivation(pid:,
-  source: .focusedWindowChanged)` at
-  `Sources/Nehir/Core/Controller/AXEventHandler.swift:4594`, which for a known
-  managed entry runs a long chain of suppression guards
-  (`AXEventHandler.swift:4685-4814`: `removeExistingEntryIfCurrentDecisionIsUntracked`,
-  close-recovery suppression, overlay-churn suppression, inactive-workspace
-  suppression, etc.) before reaching workspace activation. The test's contract
-  is that a generic unmanaged focus, followed by an unrelated same-pid destroy
-  and miniaturize, must *not* trip any of those guards for the inactive
-  workspace's window — the managed focused-window event must still reveal its
-  inactive workspace and become the keyboard-focus target.
+- **Production mechanism (rooted via a temporary test-local probe, then
+  reverted):** the test drives `handleAppActivation(pid:, source:
+  .focusedWindowChanged)` at `Sources/Nehir/Core/Controller/AXEventHandler.swift:4594`.
+  For the known managed entry, the first guard in the chain is
+  `removeExistingEntryIfCurrentDecisionIsUntracked` (`AXEventHandler.swift:4685`
+  → `:9448`), which calls `controller.evaluateWindowDisposition` at
+  `WMController.swift:9455`. `evaluateWindowDisposition`
+  (`Sources/Nehir/Core/Controller/WMController.swift:2930`) builds the window's
+  facts, and because `makeFocusTestController` does **not** wire
+  `windowFactsProvider` or `windowInfoProvider`, two fall-throughs hit the live OS:
+  - line `:2942-2949`: `AXWindowService.collectWindowFacts` runs against the
+    test's stub element `AXUIElementCreateSystemWide()` (no real window behind
+    it) — a real AX attribute fetch.
+  - line `:3018` (`resolveWindowServerInfoForDisposition`): with no
+    `windowInfoProvider`, it calls `SkyLight.shared.queryWindowInfo(613)` — a
+    real window-server query for a window id that does not exist on the host.
+  The facts assembled from that live AX/SkyLight result feed
+  `windowRuleEngine.decision` (`WMController.swift:2967`), which on this host's
+  live session decides the window is **untracked**. `trackedModePreservingAutomaticFallbackState`
+  (`WMController.swift:2843`) returns non-nil, so `removeExistingEntryIfCurrentDecisionIsUntracked`
+  removes the inactive entry (`AXEventHandler.swift:9471`) and re-enters
+  non-managed focus — the activation aborts before any workspace reveal. Net
+  effect, observed in the probe: after `handleAppActivation`, the inactive
+  window's entry is gone (`workspaceManager.entry(for: inactiveToken) == nil`),
+  `activeWorkspace` is still workspace 1, `confirmedManagedFocus` is `nil`, and
+  the keyboard-focus border still points at the unmanaged token.
 - **Classification: env-specific-real.** Every failing line is a real
   user-facing invariant (which workspace is active, which window holds focus,
-  what the keyboard-focus border targets), not an internal count. The test is
-  correct in its contract. The divergence is that one of the suppression
-  guards — keyed on live focus-bridge / lease / uptime state
-  (`recentAppActivationByPid`, `enterNonManagedFocus` lease,
-  `hasStartedServices`) — fires on this host's display/AppKit session but not
-  on CI's. This was not fixed or deleted: production behavior is presumed
-  correct on the session CI models, and the test should be isolated from the
-  host session rather than removed.
-- **Falsifier (checked):** the twin test
-  `genericUnmanagedFocusDoesNotSuppressCurrentWorkspaceActivation`
-  (`WMControllerFocusTests.swift:1080`) — same controller, same display id, same
-  AppKit session, same `enterNonManagedFocus` setup, differing only in that the
-  window lives on the *active* workspace — **passes locally**. If the host
-  session broke the focus/activation model wholesale, the twin would fail too.
-  It does not, so the divergence is specific to the inactive-workspace
-  activation branch and its session-dependent suppression guards —
-  confirming env-specific-real rather than a general focus regression.
-  **Falsifier not yet run:** a headless / `macos-26`-equivalent run on this
-  machine is not available here, so the exact guard that fires could not be
-  pinned to a single line. Marked `needs-human-review`.
+  what the keyboard-focus border targets), not an internal count. The test's
+  contract is correct. This is not a production bug: `evaluateWindowDisposition`
+  is *correct* to consult the real window server in production, and the demotion
+  is the right behavior for a genuinely untracked window. The defect is in the
+  test fixture: `makeFocusTestController` leaves the OS boundary unwired, so the
+  stub AX element leaks to the live window server, whose behavior on this host's
+  session diverges from CI's headless `macos-26` runner. Not fixed, not deleted
+  — the test should be isolated from the host session (wire the OS boundary in
+  the fixture), not removed and not patched in `Sources/`.
+- **Falsifier (checked — decisive):** wiring a `windowInfoProvider` in the test
+  so `evaluateWindowDisposition` returns real window-server facts instead of
+  falling through to live `SkyLight.queryWindowInfo` makes the test **pass
+  locally** (same five assertions, all green). The probe was added to the test
+  body, run once, and fully reverted (`git diff` clean afterward). This
+  directly falsifies "real production bug" and confirms "test fixture leaks to
+  the live window server." The earlier twin-test check
+  (`genericUnmanagedFocusDoesNotSuppressCurrentWorkspaceActivation` passes
+  locally) corroborates this: the twin's window is on the active workspace, so
+  even if demoted it does not change `activeWorkspace`, hiding the leak.
+- **Recommended fix (test-only, not applied here — out of this task's fence):**
+  in `makeFocusTestController` (or this test), wire a `windowInfoProvider` /
+  `windowFactsProvider` returning proper standard-window facts for the test
+  windows, so `evaluateWindowDisposition` never reaches the live window server.
+  This is a `Tests/` change, consistent with `docs/TESTING.md`'s "fake the OS
+  boundary, not the algorithm" rule. No `Sources/` change is warranted.
 
-- **Action: documented only; needs-human-review; test left in place.** Not
-  deleted (real invariants), not "fixed" (no `Sources/` change; the production
+- **Action: documented only; root cause found and recorded; test left in place.**
+  Not deleted (real invariants), not "fixed" (no `Sources/` change; the production
   branch is correct on the session CI models). The recommended follow-up is to
   isolate this test's focus-bridge/lease/uptime inputs from the host AppKit
   session, or to quarantine it behind a host-session guard — a test-source
@@ -222,7 +242,9 @@ keeping each test's real invariants):
 
 Documented only (no `Tests/` or `Sources/` change):
 
-4. Test 4: env-specific-real, `needs-human-review`. Left in place.
+4. Test 4: env-specific-real, **root cause found and recorded** (see its
+   section above). Left in place; recommended test-only fix documented but not
+   applied (out of this task's fence).
 
 After the three edits, all of tests 1–3 pass in isolation
 (`mise run test -- --filter …`) and `mise run test:compile` reports
@@ -235,17 +257,22 @@ fragile/stale instrumentation was removed.
 
 ## Summary — the green-CI-vs-red-local gap
 
-The most likely root cause across the set is a **host display/AppKit session
-divergence**: every test controller keys its `Monitor.displayId` to the host's
-real `CGMainDisplayID()` (`LayoutPlanTestSupport.swift:17`), so layout, frame,
-and focus decisions that consult live display/uptime/AppKit state resolve
-differently on this host than on CI's `macos-26` runner. For tests 1–3 that
-divergence surfaced only in internal counter/derived-value assertions
-(fragile-mock / stale-contract) while the real invariants held, so those
-instrumented assertions were removed. Test 4 surfaces it in real behavioral
-invariants on the inactive-workspace activation path, so it is a genuine
-env-specific-real that should be isolated from the host session rather than
-deleted; it remains, marked `needs-human-review`.
+The shared root cause across the set is a **host display/AppKit/window-server
+session divergence**: every test controller keys its `Monitor.displayId` to the
+host's real `CGMainDisplayID()` (`LayoutPlanTestSupport.swift:17`) and several
+leave the OS boundary unwired, so layout, frame, and focus decisions that
+consult live display/uptime/AppKit/SkyLight state resolve differently on this
+host than on CI's `macos-26` runner. For tests 1–3 that divergence surfaced only
+in internal counter/derived-value assertions (fragile-mock / stale-contract)
+while the real invariants held, so those instrumented assertions were removed.
+Test 4 surfaces it in real behavioral invariants on the inactive-workspace
+activation path; its root cause is now **fully rooted**: the test fixture leaves
+the OS boundary unwired, so `evaluateWindowDisposition`
+(`WMController.swift:2930`) falls through to live AX (`collectWindowFacts`) and
+`SkyLight.queryWindowInfo` (`WMController.swift:3018`) for a stub window id,
+which on this host's session yields facts that demote the window to untracked
+and abort the activation. The recommended fix is test-only (wire the OS
+boundary in the fixture), not a `Sources/` change.
 
 ## Validation
 
