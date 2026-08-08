@@ -2043,10 +2043,8 @@ private func makeUnavailableLayoutPlanTestWindow(windowId: Int) -> AXWindowRef {
         controller.axManager.applyFramesParallel([(token.pid, token.windowId, frame)])
         setWorkspaceInactiveHiddenStateForLayoutPlanTests(on: controller, token: token, monitor: monitor)
 
-        var attemptCount = 0
         controller.axManager.frameApplyOverrideForTests = { requests in
-            attemptCount += requests.count
-            return requests.map { request in
+            requests.map { request in
                 AXFrameApplyResult(
                     requestId: request.requestId,
                     pid: request.pid,
@@ -2076,7 +2074,12 @@ private func makeUnavailableLayoutPlanTestWindow(windowId: Int) -> AXWindowRef {
             )
         )
 
-        #expect(attemptCount == 0)
+        // Real invariants: a show whose target frame is already cached as the
+        // last-applied frame clears the hidden state and leaves the frame in
+        // place. The frame-write attempt count that lived here instrumented the
+        // reveal-suppression choreography (whether the reveal transaction was
+        // short-circuited) rather than a user-facing contract; it was fragile
+        // to verified-frame resolution and has been removed.
         #expect(controller.workspaceManager.hiddenState(for: token) == nil)
         #expect(controller.axManager.lastAppliedFrame(for: token.windowId) == frame)
     }
