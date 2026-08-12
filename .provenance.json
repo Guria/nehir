@@ -128,7 +128,8 @@
         "Tests/NehirTests/ScrollLockRevealPolicyTests.swift",
         "Tests/NehirTests/WindowServerPointerOcclusionTests.swift",
         "Tests/NehirTests/ScrollLockFocusCommandRevealTests.swift",
-        "Tests/NehirTests/IPCWireVersionFieldTests.swift"
+        "Tests/NehirTests/IPCWireVersionFieldTests.swift",
+        "Tests/NehirTests/NiriLayoutEngineMonitorCacheTests.swift"
       ],
       "copyright": [
         "2026 Aleksei Gurianov and Nehir contributors"
