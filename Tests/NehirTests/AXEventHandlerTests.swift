@@ -5077,6 +5077,14 @@ private func waitUntilAXEventTest(
         controller.axManager.applyFramesParallel([(targetHandle.pid, targetHandle.windowId, appliedFrame)])
         defer { controller.axManager.frameApplyOverrideForTests = nil }
 
+        // Fake the OS boundary: report the frame AX observes as the frame the
+        // manager just applied, so the frame-change suppression path
+        // (AXManager.shouldSuppressFrameChangeRelayout, observed == lastApplied)
+        // fires deterministically instead of falling through to a live AX read
+        // on the stub element, whose result diverges between this host and CI.
+        controller.axEventHandler.frameProvider = { _ in appliedFrame }
+        defer { controller.axEventHandler.frameProvider = nil }
+
         var relayoutReasons: [RefreshReason] = []
         controller.layoutRefreshController.resetDebugState()
         controller.layoutRefreshController.debugHooks.onRelayout = { reason, _ in
@@ -5091,11 +5099,11 @@ private func waitUntilAXEventTest(
         await controller.layoutRefreshController.waitForRefreshWorkForTests()
 
         // Real invariant: a non-focused window whose frame change matches its
-        // last-applied frame does not trigger a relayout. The internal
+        // last-applied frame does not trigger a relayout. The
         // observed-frame-read and suppression counters that lived here
-        // instrumented the suppression choreography rather than a user-facing
-        // contract; they were fragile to AX-manager state ordering and have
-        // been removed.
+        // instrumented the suppression choreography, not a user-facing contract;
+        // they were removed. frameProvider stays because it is the OS-boundary
+        // fake the invariant needs to hold deterministically.
         #expect(relayoutReasons.isEmpty)
         #expect(controller.axEventHandler.debugCounters.geometryRelayoutRequests == 0)
     }
