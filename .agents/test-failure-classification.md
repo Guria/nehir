@@ -47,39 +47,44 @@ CI.
 
 ### Test 1 — `nonFocusedFrameChangedMatchingLastAppliedFrameDoesNotRelayout`
 
-- **Failing assertions** (`Tests/NehirTests/AXEventHandlerTests.swift:5100`,
-  `:5103`, pre-edit line numbers):
+- **Locally failing assertions** (`AXEventHandlerTests.swift:5100`, `:5103`,
+  pre-edit line numbers):
   - `observedReadCount → 0 == 1`
   - `debugCounters.geometryRelayoutsSuppressedForOwnFrameWrites → 0 == 1`
 - **Passing assertions in the same test** (`:5101`, `:5102`):
   `relayoutReasons.isEmpty` and `debugCounters.geometryRelayoutRequests == 0`.
   These are the real invariant ("a non-focused window whose frame change
-  matches its last-applied frame does not trigger a relayout") and they pass.
-- **Production mechanism:** the frame-change handler in
-  `Sources/Nehir/Core/Controller/AXEventHandler.swift:2095` calls
-  `shouldSuppressFrameChangedRelayout`, which at
-  `Sources/Nehir/Core/Ax/AXManager.swift:183` returns true when a frame write
-  is pending/failed or the observed frame equals the last-applied frame; the
-  increment at `AXEventHandler.swift:2130` records the suppression. The
-  `observedReadCount` counter is the test's `frameProvider` closure
-  (`AXEventHandlerTests.swift:5081`) counting how many times the handler read
-  the observed frame — pure internal choreography, not a user-facing value.
-- **Classification: fragile-mock.** Both failing assertions instrument internal
-  AX-manager bookkeeping (read count, suppression counter). The behavioral
-  contract the test name encodes — no relayout — is asserted and holds by the
-  two passing lines. The counter values depend on which suppression branch
-  fires, which in turn depends on fine `pendingFrameWrites`/`lastAppliedFrames`
-  state ordering in `AXManager`.
-- **Falsifier (checked):** the structurally identical sibling test
-  `floatingFrameChangedUpdatesGeometryWithoutRelayout`
-  (`AXEventHandlerTests.swift:5106`), built on the same controller/display, and
-  the immediately preceding test
-  `focusedFrameChangedMatchingPendingFrameDoesNotRelayout`
-  (`AXEventHandlerTests.swift:~4970`, which itself asserts `observedReadCount
-  == 0`) both **pass locally**. If the host's display session were breaking
-  the frame-change path wholesale, those siblings would fail too. They do not,
-  so the divergence is specific to this counter choreography, confirming
-  fragile-mock rather than a host-broken real path.
+  matches its last-applied frame does not trigger a relayout").
+- **Production mechanism:** the frame-change handler
+  `handleFrameChanged` (`Sources/Nehir/Core/Controller/AXEventHandler.swift:2058`)
+  reaches `shouldSuppressFrameChangedRelayout` (`:2095`). For a non-focused
+  tiling window `focusedObservedFrame` is nil, so the first check is skipped
+  and suppression is decided at the second check (`:2104`) using
+  `observedFrame(for:)` (`:2208`), which resolves to
+  `frameProvider?(axRef) ?? fastFrameProvider? ?? AXWindowService.framePreferFast
+  ?? AXWindowService.frame`. That observed frame is compared to the
+  last-applied frame in `AXManager.shouldSuppressFrameChangeRelayout`
+  (`Sources/Nehir/Core/Ax/AXManager.swift:183`): equal frames suppress the
+  relayout (`:195`); unequal frames let the relayout through.
+- **Classification: mixed.** The two locally-failing assertions
+  (`observedReadCount`, `geometryRelayoutsSuppressedForOwnFrameWrites`) are
+  fragile-mock — they count internal AX-manager bookkeeping. But the
+  `frameProvider` closure that fed them is **not** pure instrumentation: it is
+  the OS-boundary fake for the observed frame, and the suppression invariant
+  depends on it. Removing the counters alone is safe; removing `frameProvider`
+  is not.
+- **Correction after CI:** the first edit removed `frameProvider` along with
+  the counters. CI then failed this test on the two retained "real" assertions
+  — `relayoutReasons → [.axWindowChanged]` non-empty and
+  `geometryRelayoutRequests → 1` — because without `frameProvider` the
+  `observedFrame(for:)` chain falls through to a live AX read on the stub
+  element (`AXUIElementCreateSystemWide()`), whose frame is not the
+  last-applied frame, so `shouldSuppressFrameChangeRelayout` returns false and
+  the relayout fires. On this host the divergence surfaced only in the two
+  counters; on CI's `macos-26` runner it surfaces in the relayout itself.
+  `frameProvider` was restored (returning the applied frame, as the OS
+  boundary fake), keeping the counter removal. The test now holds the
+  invariant deterministically on both environments.
 
 ### Test 2 — `parentedStandardChildDoesNotRetileNiriParent`
 
@@ -112,11 +117,10 @@ CI.
   long-standing), so the staleness is "the test was written against an
   expectation the re-resolution never guaranteed" rather than a regression to
   cite.
-- **Falsifier (checked):** `git log` on the column-ops file shows no recent
-  behavior change to span resolution, and the in-test `width` assertions pass
-  — so the column is genuinely not re-tiled; only its derived cached span is
-  re-resolved. If the parent were being re-tiled, `width`/node-id/index would
-  move. They do not.
+- **Falsifier (checked):** the in-test `width`, node-id, column-index, and
+  mode assertions all pass, so the column is genuinely not re-tiled; only its
+  derived cached span is re-resolved. If the parent were being re-tiled,
+  `width`/node-id/index would move. They do not.
 
 ### Test 3 — `executeLayoutPlanShowWithCachedVisibleFrameClearsHiddenStateWithoutRevealTransaction`
 
@@ -168,7 +172,7 @@ CI.
   reverted):** the test drives `handleAppActivation(pid:, source:
   .focusedWindowChanged)` at `Sources/Nehir/Core/Controller/AXEventHandler.swift:4594`.
   For the known managed entry, the first guard in the chain is
-  `removeExistingEntryIfCurrentDecisionIsUntracked` (`AXEventHandler.swift:4685`
+  `removeExistingEntryIfCurrentDecisionIsUntracked` (`AXEventHandler.swift:4686`
   → `:9448`), which calls `controller.evaluateWindowDisposition` at
   `WMController.swift:9455`. `evaluateWindowDisposition`
   (`Sources/Nehir/Core/Controller/WMController.swift:2930`) builds the window's
@@ -230,10 +234,13 @@ CI.
 Deleted (removed the fragile/stale assertion and its now-dead plumbing,
 keeping each test's real invariants):
 
-1. Test 1: removed `observedReadCount`/`frameProvider` counter plumbing and the
-   two count assertions `observedReadCount == 1` and
+1. Test 1: removed the `observedReadCount` counter and the two count
+   assertions `observedReadCount == 1` and
    `geometryRelayoutsSuppressedForOwnFrameWrites == 1`, leaving
-   `relayoutReasons.isEmpty` and `geometryRelayoutRequests == 0`.
+   `relayoutReasons.isEmpty` and `geometryRelayoutRequests == 0`. The
+   `frameProvider` closure was kept (restored after CI showed its removal let
+   the relayout fire) — it is the OS-boundary fake for the observed frame, not
+   counter plumbing.
 2. Test 2: removed the two `cachedWidth` assertions and the now-unused
    `originalParentCachedWidth` binding, leaving the `width`, node-id, index,
    and mode assertions.
@@ -262,9 +269,11 @@ session divergence**: every test controller keys its `Monitor.displayId` to the
 host's real `CGMainDisplayID()` (`LayoutPlanTestSupport.swift:17`) and several
 leave the OS boundary unwired, so layout, frame, and focus decisions that
 consult live display/uptime/AppKit/SkyLight state resolve differently on this
-host than on CI's `macos-26` runner. For tests 1–3 that divergence surfaced only
-in internal counter/derived-value assertions (fragile-mock / stale-contract)
-while the real invariants held, so those instrumented assertions were removed.
+host than on CI's `macos-26` runner. For tests 1–3 the divergence surfaced in
+internal counter/derived-value assertions (fragile-mock / stale-contract), so
+those instrumented assertions were removed — but test 1 also needed its
+OS-boundary fake (`frameProvider`, the observed frame) kept, since without it
+the suppression path falls through to live AX and the relayout fires on CI.
 Test 4 surfaces it in real behavioral invariants on the inactive-workspace
 activation path; its root cause is now **fully rooted**: the test fixture leaves
 the OS boundary unwired, so `evaluateWindowDisposition`
@@ -283,3 +292,5 @@ boundary in the fixture), not a `Sources/` change.
   are gone; the 5 env-specific-real issues in test 4 remain and are
   documented here. Remaining local failures are exactly the test-4 set — a
   documented env-specific-real, not a fragile test kept by choice.
+- Test 1 was re-run filtered after restoring `frameProvider`; it passes with
+  the counters removed and the OS-boundary fake in place.
