@@ -571,6 +571,8 @@ final class WorkspaceNavigationHandler {
         guard let controller else { return nil }
         let wm = controller.workspaceManager
 
+        // Interior moves resolve without wrapping, so the edge cases below are
+        // reached only when there is no further workspace in `direction`.
         let existing: WorkspaceDescriptor? = if direction == .down {
             wm.nextWorkspaceInOrder(on: monitorId, from: workspaceId, wrapAround: false)
         } else {
@@ -578,14 +580,41 @@ final class WorkspaceNavigationHandler {
         }
         if let existing { return existing }
 
+        // Past the end of the list, `movePastLastWorkspace` decides between
+        // creating the next numbered workspace and wrapping to the first.
+        // Moving up past the first workspace always wraps: workspaces are
+        // numbered from 1, so there is no lower-numbered workspace to create.
+        if direction == .down,
+           controller.settings.movePastLastWorkspace == .create,
+           let created = createNextNumberedWorkspace(after: workspaceId, on: monitorId)
+        {
+            return created
+        }
+
+        return if direction == .down {
+            wm.nextWorkspaceInOrder(on: monitorId, from: workspaceId, wrapAround: true)
+        } else {
+            wm.previousWorkspaceInOrder(on: monitorId, from: workspaceId, wrapAround: true)
+        }
+    }
+
+    /// Creates the workspace numbered one higher than `workspaceId` and assigns
+    /// it to `monitorId`. Returns `nil` when the current workspace is not
+    /// numerically named, or when the successor name is already taken (in which
+    /// case the caller wraps instead of silently reusing another monitor's
+    /// workspace).
+    private func createNextNumberedWorkspace(
+        after workspaceId: WorkspaceDescriptor.ID,
+        on monitorId: Monitor.ID
+    ) -> WorkspaceDescriptor? {
+        guard let controller else { return nil }
+        let wm = controller.workspaceManager
+
         guard let currentName = wm.descriptor(for: workspaceId)?.name,
               let currentNumber = Int(currentName)
         else { return nil }
 
-        let candidateNumber = direction == .down ? currentNumber + 1 : currentNumber - 1
-        guard candidateNumber > 0 else { return nil }
-
-        let candidateName = String(candidateNumber)
+        let candidateName = String(currentNumber + 1)
         guard wm.workspaceId(named: candidateName) == nil else { return nil }
 
         guard let targetId = wm.workspaceId(for: candidateName, createIfMissing: false) else { return nil }

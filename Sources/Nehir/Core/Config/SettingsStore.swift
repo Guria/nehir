@@ -107,6 +107,12 @@ final class SettingsStore {
         didSet { scheduleSave() }
     }
 
+    var movePastLastWorkspace = MovePastLastWorkspacePolicy(
+        rawValue: SettingsStore.defaultExport.movePastLastWorkspace
+    ) ?? .create {
+        didSet { scheduleSave() }
+    }
+
     var niriLoneWindowMaxWidth = SettingsStore.validatedLoneWindowMaxWidth(
         SettingsStore.defaultExport.niriLoneWindowMaxWidth
     ) {
@@ -476,6 +482,7 @@ final class SettingsStore {
             niriLoneWindowMaxWidth: niriLoneWindowMaxWidth,
             niriColumnWidthPresets: niriColumnWidthPresets,
             niriDefaultColumnWidth: niriDefaultColumnWidth,
+            movePastLastWorkspace: movePastLastWorkspace.rawValue,
             workspaceConfigurations: workspaceConfigurations,
             bordersEnabled: bordersEnabled,
             borderWidth: borderWidth,
@@ -563,6 +570,9 @@ final class SettingsStore {
             export.niriColumnWidthPresets ?? baseline.niriColumnWidthPresets ?? SettingsStore.defaultColumnWidthPresets
         )
         niriDefaultColumnWidth = SettingsStore.validatedDefaultColumnWidth(export.niriDefaultColumnWidth)
+        movePastLastWorkspace = MovePastLastWorkspacePolicy(
+            rawValue: export.movePastLastWorkspace
+        ) ?? .create
 
         workspaceConfigurations = SettingsStore.normalizedWorkspaceConfigurations(
             export.workspaceConfigurations,

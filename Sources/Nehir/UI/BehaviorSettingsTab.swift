@@ -49,6 +49,16 @@ struct BehaviorSettingsTab: View {
                     "When moving a window to another workspace, switches your active workspace to follow it."
                 )
 
+                Picker("Move Past Last Workspace", selection: $settings.movePastLastWorkspace) {
+                    ForEach(MovePastLastWorkspacePolicy.allCases) { policy in
+                        Text(policy.displayName).tag(policy)
+                    }
+                }
+                SettingsCaption(
+                    "When moving a window down past the last workspace, either create a new workspace "
+                        + "or wrap around to the first. Moving up past the first workspace always wraps."
+                )
+
                 Picker("Reveal Style", selection: $settings.revealStyle) {
                     ForEach(RevealStyle.allCases, id: \.self) { policy in
                         Text(policy.displayName).tag(policy)

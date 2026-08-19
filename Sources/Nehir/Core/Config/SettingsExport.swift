@@ -38,6 +38,8 @@ struct SettingsExport: Equatable, Sendable {
     var niriColumnWidthPresets: [Double]?
     var niriDefaultColumnWidth: Double?
 
+    var movePastLastWorkspace: String
+
     var workspaceConfigurations: [WorkspaceConfiguration]
 
     var bordersEnabled: Bool
@@ -147,6 +149,7 @@ extension SettingsExport {
             niriLoneWindowMaxWidth: nil,
             niriColumnWidthPresets: BuiltInSettingsDefaults.niriColumnWidthPresets,
             niriDefaultColumnWidth: nil,
+            movePastLastWorkspace: MovePastLastWorkspacePolicy.create.rawValue,
             workspaceConfigurations: BuiltInSettingsDefaults.workspaceConfigurations,
             bordersEnabled: false,
             borderWidth: 5.0,

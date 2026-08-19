@@ -24,6 +24,7 @@ struct CanonicalTOMLConfig: Codable, Equatable {
     var mouseWarp: MouseWarp
     var gaps: Gaps
     var niri: Niri
+    var workspace: Workspace
     var borders: Borders
     var workspaceBar: WorkspaceBar
     var gestures: Gestures
@@ -31,7 +32,8 @@ struct CanonicalTOMLConfig: Codable, Equatable {
     var appearance: Appearance
 
     enum CodingKeys: String, CodingKey, CaseIterable {
-        case general, focus, mouseWarp, gaps, niri, borders, workspaceBar, gestures, statusBar, appearance
+        case general, focus, mouseWarp, gaps, niri, workspace, borders, workspaceBar, gestures,
+             statusBar, appearance
     }
 
     struct General: Codable, Equatable {
@@ -118,6 +120,15 @@ struct CanonicalTOMLConfig: Codable, Equatable {
         enum CodingKeys: String, CodingKey, CaseIterable {
             case balancedColumnCount, infiniteLoop, revealStyle, loneWindowMaxWidth, columnWidthPresets,
                  defaultColumnWidth
+        }
+    }
+
+    struct Workspace: Codable, Equatable {
+        var movePastLastWorkspace: String
+        var unknownFields: [String: SettingsTOMLUnknownValue] = [:]
+
+        enum CodingKeys: String, CodingKey, CaseIterable {
+            case movePastLastWorkspace
         }
     }
 
@@ -305,6 +316,10 @@ extension CanonicalTOMLConfig {
             defaultColumnWidth: export.niriDefaultColumnWidth,
             unknownFields: unknown["niri"] ?? [:]
         )
+        workspace = Workspace(
+            movePastLastWorkspace: export.movePastLastWorkspace,
+            unknownFields: unknown["workspace"] ?? [:]
+        )
         borders = Borders(
             enabled: export.bordersEnabled,
             width: export.borderWidth,
@@ -405,6 +420,7 @@ extension CanonicalTOMLConfig {
             niriLoneWindowMaxWidth: niri.loneWindowMaxWidth,
             niriColumnWidthPresets: niri.columnWidthPresets,
             niriDefaultColumnWidth: niri.defaultColumnWidth,
+            movePastLastWorkspace: workspace.movePastLastWorkspace,
             workspaceConfigurations: BuiltInSettingsDefaults.workspaceConfigurations,
             bordersEnabled: borders.enabled,
             borderWidth: borders.width,
@@ -476,6 +492,7 @@ extension CanonicalTOMLConfig {
         mouseWarp = try container.decodeWithDefault(MouseWarp.self, forKey: .mouseWarp, default: d.mouseWarp)
         gaps = try container.decodeWithDefault(Gaps.self, forKey: .gaps, default: d.gaps)
         niri = try container.decodeWithDefault(Niri.self, forKey: .niri, default: d.niri)
+        workspace = try container.decodeWithDefault(Workspace.self, forKey: .workspace, default: d.workspace)
         borders = try container.decodeWithDefault(Borders.self, forKey: .borders, default: d.borders)
         workspaceBar = try container.decodeWithDefault(
             WorkspaceBar.self,
@@ -494,6 +511,7 @@ extension CanonicalTOMLConfig {
         try container.encode(mouseWarp, forKey: .mouseWarp)
         try container.encode(gaps, forKey: .gaps)
         try container.encode(niri, forKey: .niri)
+        try container.encode(workspace, forKey: .workspace)
         try container.encode(borders, forKey: .borders)
         try container.encode(workspaceBar, forKey: .workspaceBar)
         try container.encode(gestures, forKey: .gestures)
@@ -702,6 +720,25 @@ extension CanonicalTOMLConfig.Niri {
         try container.encodeIfPresent(loneWindowMaxWidth, forKey: "loneWindowMaxWidth")
         try container.encodeIfPresent(columnWidthPresets, forKey: "columnWidthPresets")
         try container.encodeIfPresent(defaultColumnWidth, forKey: "defaultColumnWidth")
+        try container.encodeUnknownFields(unknownFields)
+    }
+}
+
+extension CanonicalTOMLConfig.Workspace {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let d = CanonicalTOMLConfig.defaults().workspace
+        movePastLastWorkspace = try container.decodeWithDefault(
+            String.self,
+            forKey: .movePastLastWorkspace,
+            default: d.movePastLastWorkspace
+        )
+        unknownFields = try SettingsTOMLUnknownValue.decodeUnknownFields(from: decoder, excluding: CodingKeys.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: SettingsTOMLDynamicKey.self)
+        try container.encode(movePastLastWorkspace, forKey: "movePastLastWorkspace")
         try container.encodeUnknownFields(unknownFields)
     }
 }
