@@ -93,6 +93,7 @@
         "Tests/NehirTests/FocusPreviousCrossWorkspaceTests.swift",
         "Tests/NehirTests/InteractiveMoveDemoModelTests.swift",
         "Tests/NehirTests/MonitorIdentityMatchingTests.swift",
+        "Tests/NehirTests/MovedWindowRevealAfterWorkspaceTransferTests.swift",
         "Tests/NehirTests/NiriMonitorTests.swift",
         "Tests/NehirTests/ParkedViewportRelayoutTests.swift",
         "Tests/NehirTests/PureLayoutAgreementTests.swift",
