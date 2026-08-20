@@ -317,12 +317,13 @@ enum StateReducer {
     private static func managedFocusConfirmed(
         from focusSession: FocusSessionSnapshot,
         token: WindowToken,
-        workspaceId _: WorkspaceDescriptor.ID,
+        workspaceId: WorkspaceDescriptor.ID,
         monitorId _: Monitor.ID?,
         appFullscreen: Bool
     ) -> FocusSessionSnapshot {
         var focusSession = focusSession
         focusSession.focusedToken = token
+        focusSession.focusedWorkspaceId = workspaceId
         focusSession.pendingManagedFocus = .empty
         focusSession.isNonManagedFocusActive = false
         focusSession.isAppFullscreenActive = appFullscreen
@@ -353,6 +354,7 @@ enum StateReducer {
         var focusSession = focusSession
         if active, !preserveFocusedToken {
             focusSession.focusedToken = nil
+            focusSession.focusedWorkspaceId = nil
         }
         if !preservePendingManagedFocus {
             focusSession.pendingManagedFocus = .empty
@@ -384,6 +386,7 @@ enum StateReducer {
         var focusSession = focusSession
         if focusSession.focusedToken == token {
             focusSession.focusedToken = nil
+            focusSession.focusedWorkspaceId = nil
             focusSession.isAppFullscreenActive = false
         }
         if focusSession.pendingManagedFocus.token == token {
