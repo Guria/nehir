@@ -1,5 +1,13 @@
 # Moved window is parked offscreen on its destination workspace while holding focus — Discovery
 
+> **Resolved 2026-08-20.** Root cause identified and the fix confirmed by the
+> reporter in their real reproduction: the AX focus-confirmation path skipped the
+> reveal because it treated the move as the same window being re-focused *in
+> place*, comparing only focus tokens and not the workspace the focus was
+> confirmed in. See **Root cause** below. The rest of this document is retained
+> because eight candidate mechanisms were investigated and eliminated on the way
+> there; the table records the evidence for each so the work is not repeated.
+
 Scope: a window moved to an adjacent workspace via `moveWindowToWorkspaceDown` /
 `moveWindowToWorkspaceUp` can land selected in a column outside the destination
 viewport. It is parked offscreen, receives no frame write, and still takes
@@ -18,19 +26,17 @@ All file/line references were verified against the Nehir source tree at
   workspace 2 switches the visible workspace to 2, focus lands on the moved
   window, but the window drawn on screen is a different one. The moved window is
   parked at the right screen edge.
-- **Mechanically confirmed:** the moved window ends up with
-  `activeColumnIndex` pointing at its column while `viewOffsetPixels` still
-  places the viewport elsewhere, so the column is entirely outside the viewport.
-  The layout pass then parks it `layoutTransient(right)` and emits no frame
-  write for it, while the focus handoff still grants it focus.
-- **Root cause: NOT identified.** Six candidate mechanisms were tested against
-  runtime evidence and eliminated (list below). The reveal step that should
-  scroll the destination viewport provably works in isolation (CI-verified) and
-  has been observed working at runtime on the same code path.
-- **Status:** 🟡 **Open / intermittent.** The defect is timing-dependent: it
-  reproduces most of the time with runtime trace capture **off**, and did not
-  reproduce in repeated attempts with capture **on**. Instrumentation perturbs
-  it.
+- **Root cause (confirmed):** the AX focus-confirmation path preserved the
+  destination viewport because it saw a re-confirmation of the already-confirmed
+  focus token. That test compared **tokens only**, so a window that already held
+  focus and was then moved produced the same signature as a window re-focused in
+  place — and the reveal was skipped, leaving the moved window's column outside
+  the viewport.
+- **Fix:** record the workspace the confirmed focus was established in and
+  require it to match before treating a re-confirmation as in place. Confirmed
+  working by the reporter.
+- **Eight candidate mechanisms were eliminated first.** The table below records
+  the evidence that killed each one.
 
 ## Symptom and confirmed reproduction
 
@@ -220,45 +226,72 @@ explain the failure.
 | 4 | The stale-selection guard in `applySessionPatch` reverts the rebase (it restores `activeColumnIndex` from live state while preserving `viewOffsetPixels`) | Instrumented across two traces / 128 patches: fired **once**, on the source workspace, with every value identical (`incomingIdx=3 liveIdx=3 committedIdx=3`, offsets all `-1190`). Harmless. |
 | 5 | `stopScrollAnimation(for: sourceMonitor.displayId)` in `finishWorkspaceMove` destroys the destination's freshly-scheduled animation, because `scrollAnimationByDisplay` holds one workspace per display and all workspaces share display 2 | Instrumented every registry mutation: `overwrites=false` on every `REGISTER`, every `STOP` removed the workspace that registered it, and the source-monitor stop consistently reported `removed=none`. The display-key collision does not occur in practice. |
 | 6 | Frame changes discarded by `dropStaleFrames` while an animation is registered (`LayoutRefreshController.swift:4409-4418`) | Observed firing, but only during *successful* animated reveals (`DROP_STALE_FRAMES ws=3 dropped=3`), which is its documented purpose — the display-link driver owns frames while animating. In the failing trace no animation was registered at all. |
+| 7 | The plan-build recalc gate tests `abs(viewOffsetPixels.current() - offsetBefore) > 1`, which cannot observe a spring-scheduled scroll (`animateToOffset` moves the target and leaves the current offset for the display-link driver) | The mismatch is real and measured by tests, but it is **downstream** of the actual cause: the reveal never runs at all in the failing case, so there is no scheduled scroll for the gate to miss. Fixing it did not change the symptom. |
+| 8 | First attempt at the confirmed fix, recording the confirmed-focus workspace on the live session state only | Inert. Confirmations arrive via `confirmManagedFocus`, which routes through the reducer; `applyReconciledFocusSession` then replaces the focus session wholesale from a `FocusSessionSnapshot` that did not carry the field, so it was reset to `nil` on every reconcile. The skip trace showed `previousConfirmedFocusWorkspace=nil` with `confirmedFocusWorkspaceUnchanged=true`, i.e. the guard behaved exactly as before. |
 
-## What the evidence now says
+## Root cause
 
-In the failing run the scroll was **never scheduled** — not scheduled and then
-destroyed. `currentViewStart == targetViewStart == -20.0` means no target was
-ever set, and no animation was registered.
+The reveal never ran. The AX focus-confirmation path skipped it deliberately, and
+its own trace event names the decision:
 
-That is difficult to reconcile with `scrollToReveal` provably scheduling a
-scroll for that exact state, and with the same path observed succeeding at
-runtime. The remaining possibilities, none yet tested:
+```
+reason=ax_focus_confirm_reveal_skipped
+preserveActiveViewport=true
+preserveActiveViewportReason=already_confirmed_focused_window_changed
+skipReason=preserve_active_viewport
+isWorkspaceActive=true
+activeColumnIndex=3  currentOffset=-3530.0  targetOffset=-3530.0
+currentViewStart=-20.0  targetViewStart=-20.0
+```
 
-- **Motion policy.** `ensureSelectionVisible` receives
-  `controller.motionPolicy.snapshot()`. If that resolves such that
-  `animateToOffset` applies the offset instantly rather than scheduling an
-  animation, the reveal could complete without a registered animation and be
-  overwritten by a later write. No instrumentation has recorded the motion
-  snapshot at this call site.
-- **A different column geometry at failure time.** The reveal is a legitimate
-  no-op if `columnVisibility` returns `.fullyVisible`. The recorded failure
-  geometry computes to `.parked`, but the widths at the exact moment
-  `ensureSelectionVisible` ran were not captured independently of the
-  post-transfer dump.
-- **The computed state discarded between reveal and commit.**
-  `prepareMovedWindowTargetViewport` mutates a local `targetState` and commits
-  via `applySessionPatch` (`WorkspaceNavigationHandler.swift:141-145`); the
-  observed `patch_committed` samples show `matches=true`, but only from
-  succeeding runs.
+That `preserveActiveViewport` decision came from a token-only comparison
+(`Sources/Nehir/Core/Controller/AXEventHandler.swift:5468-5469` at `f097f35a`):
 
-## Reproduction guidance for the next attempt
+```swift
+let previousConfirmedFocusToken = controller.workspaceManager.confirmedManagedFocusToken
+let wasAlreadyConfirmedFocus = previousConfirmedFocusToken == entry.token
+```
 
-- The vulnerable path needs the destination viewport **not** already resting on
-  the column the moved window will occupy. Concretely: switch to the destination
-  workspace, scroll to a different column, switch back, then move a window in.
-- Runtime trace capture suppresses the defect. A lighter-weight permanent
-  diagnostic (a few fields on an existing trace event) is more likely to survive
-  than the heavyweight probe layer used here.
-- The single most diagnostic datum is whether an animation is registered for the
-  destination workspace immediately after `ensureSelectionVisible` returns, plus
-  the motion snapshot that call received.
+feeding `preserveActiveViewportReason = .alreadyConfirmedFocusedWindowChanged`
+when `wasAlreadyConfirmedFocus && source == .focusedWindowChanged`.
+
+The guard exists for a good reason, stated in its own comment: a quick-terminal
+hide can make macOS re-focus the existing managed window, and revealing then
+would scroll the viewport back to a column the user deliberately scrolled away
+from.
+
+But moving a window that **already holds focus** produces the same signature. The
+destination workspace emits a `focusedWindowChanged` notification for a token that
+is already the confirmed focus, so the guard concluded "focus did not really
+change, preserve the viewport" — while the moved window's column is wherever the
+transfer appended it, usually outside the destination viewport. Preserving that
+viewport is precisely what leaves the window parked offscreen.
+
+This also explains the two facts that had resisted explanation:
+
+- `currentViewStart == targetViewStart` with no animation registered — nothing
+  ever set a target, because the reveal did not execute.
+- The intermittency. The failure needs the destination viewport not already
+  resting on the column the window lands in; when it already does, no reveal is
+  required and the skip is harmless. In one instrumented trace, seven of eight
+  moves were in that harmless shape.
+
+### Fix
+
+Record the workspace the confirmed focus was established in, and require it to
+match before treating a re-confirmation as in place. The invariant: *a same-window
+re-focus within one workspace preserves the viewport; the same window re-focused
+after changing workspace reveals.* The quick-terminal case the guard was built for
+is unaffected, because that re-focus happens within one workspace.
+
+The recorded workspace has to travel with the focus token through the reconcile
+cycle — carried on `FocusSessionSnapshot`, set by
+`StateReducer.managedFocusConfirmed` from the `workspaceId` it previously
+discarded, cleared alongside `focusedToken`, and round-tripped through
+`focusSessionSnapshot` / `applyReconciledFocusSession`. Recording it only on the
+live session state leaves the field reset on every reconcile (candidate 8 above).
+
+Confirmed working by the reporter in their real reproduction.
 
 ## Related work
 
@@ -276,11 +309,18 @@ runtime. The remaining possibilities, none yet tested:
 
 ## Status
 
-- Symptom: **confirmed by the user in their real reproduction.**
+- Symptom: **confirmed by the reporter in their real reproduction.**
 - Failure state: **observed** in a runtime trace, with the arithmetic
   independently reproduced from the recorded values.
-- Root cause: **under investigation.** Six candidates eliminated; no confirmed
-  mechanism.
-- Fix: **none proposed.** No change should be described as fixing this until a
-  mechanism is identified and the user confirms the behaviour in their real
-  reproduction.
+- Root cause: **identified** — the AX focus-confirmation path skipped the reveal
+  on a token-only re-confirmation test, recorded above with the trace event that
+  names the decision.
+- Fix: **confirmed working** by the reporter. Eight candidate mechanisms were
+  eliminated before it; the table records the evidence for each.
+- Follow-ups left open by this investigation:
+  - Issue #69, the sticky Nehir-fullscreen `sizingMode` (candidate 1) — a real
+    separate defect.
+  - The z-order gap for a window transferred from a visible workspace
+    (candidate 2) — real, latent, and never observed to execute on this path.
+  - The recalc gate's blindness to a spring-scheduled scroll (candidate 7) —
+    real, measured by tests, and downstream of the cause fixed here.
