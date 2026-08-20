@@ -1,4 +1,4 @@
-# Moved window is parked offscreen on its destination workspace while holding focus — Discovery
+# Moved window is parked offscreen on its destination workspace while holding focus — Completed
 
 > **Resolved 2026-08-20.** Root cause identified and the fix confirmed by the
 > reporter in their real reproduction: the AX focus-confirmation path skipped the
@@ -7,6 +7,10 @@
 > confirmed in. See **Root cause** below. The rest of this document is retained
 > because eight candidate mechanisms were investigated and eliminated on the way
 > there; the table records the evidence for each so the work is not repeated.
+>
+> **Ship state:** the fix is open as Nehir PR #209, marked ready for review and
+> green in CI, but **not yet merged to `main`** as of 2026-08-20. Re-check that
+> before treating this as landed.
 
 Scope: a window moved to an adjacent workspace via `moveWindowToWorkspaceDown` /
 `moveWindowToWorkspaceUp` can land selected in a column outside the destination
@@ -14,9 +18,10 @@ viewport. It is parked offscreen, receives no frame write, and still takes
 keyboard focus — so the user sees a different window than the one they moved
 while keystrokes go to the moved window.
 
-All file/line references were verified against the Nehir source tree at
-`f097f35a` ("Invalidate cached column spans when the monitor set changes
-(#198)"). **Re-verify before implementing; line numbers drift.**
+All file/line references were verified against `main` at `f097f35a`
+("Invalidate cached column spans when the monitor set changes (#198)"), i.e. the
+pre-fix state. **Re-verify before relying on them; line numbers drift, and the
+fix itself changes the cited focus-confirmation lines.**
 
 ---
 
