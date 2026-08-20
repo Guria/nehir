@@ -5466,7 +5466,17 @@ final class AXEventHandler: CGSEventDelegate {
         // window; without this guard the viewport scrolls back to a column the
         // user deliberately scrolled away from.
         let previousConfirmedFocusToken = controller.workspaceManager.confirmedManagedFocusToken
+        // A re-confirmation only counts as "in place" when the window is still in the
+        // workspace focus was last confirmed in. The same window re-focused after
+        // moving to a different workspace has to be revealed there: its column is
+        // wherever the transfer appended it, which is usually outside the destination
+        // viewport, and preserving that viewport leaves the window parked offscreen
+        // while holding focus.
+        let previousConfirmedFocusWorkspaceId = controller.workspaceManager.confirmedManagedFocusWorkspaceId
+        let confirmedFocusWorkspaceUnchanged = previousConfirmedFocusWorkspaceId == nil
+            || previousConfirmedFocusWorkspaceId == wsId
         let wasAlreadyConfirmedFocus = previousConfirmedFocusToken == entry.token
+            && confirmedFocusWorkspaceUnchanged
         let selectedSameAppFocusDisappearedBeforeConfirm = selectedSameAppFocusDisappearedSignal(
             for: entry,
             workspaceId: wsId
@@ -5742,6 +5752,10 @@ final class AXEventHandler: CGSEventDelegate {
                         "preserveActiveViewport=\(preserveActiveViewport)",
                         "preserveActiveViewportReason=\(preserveActiveViewportReason.rawValue)",
                         "skipReason=\(isFFM ? "ffm" : "preserve_active_viewport")",
+                        "confirmedFocusWorkspaceUnchanged=\(confirmedFocusWorkspaceUnchanged)",
+                        "previousConfirmedFocusWorkspace="
+                            + (previousConfirmedFocusWorkspaceId
+                                .flatMap { controller.workspaceManager.descriptor(for: $0)?.name } ?? "nil"),
                         "isWorkspaceActive=\(isWorkspaceActive)"
                     ]
                 )

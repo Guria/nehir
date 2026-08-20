@@ -145,6 +145,10 @@ struct PendingManagedFocusSnapshot: Equatable {
 
 struct FocusSessionSnapshot: Equatable {
     var focusedToken: WindowToken?
+    /// Workspace the confirmed focus was established in. Distinguishes a same-window
+    /// re-focus *in place* from the same window being re-focused after moving to a
+    /// different workspace, which must still reveal.
+    var focusedWorkspaceId: WorkspaceDescriptor.ID?
     var pendingManagedFocus: PendingManagedFocusSnapshot
     var focusLease: FocusPolicyLease?
     var isNonManagedFocusActive: Bool

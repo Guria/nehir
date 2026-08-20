@@ -88,6 +88,7 @@
         "Sources/Nehir/UI/SettingInfo.swift",
         "Sources/NehirCtl/CLILegalNotice.swift",
         "Tests/NehirTests/ConfigMismatchDetectorTests.swift",
+        "Tests/NehirTests/ConfirmedFocusWorkspaceTrackingTests.swift",
         "Tests/NehirTests/DisplayEnvironmentDiagnosticsTests.swift",
         "Tests/NehirTests/DisplaySpacesModeTests.swift",
         "Tests/NehirTests/FocusPreviousCrossWorkspaceTests.swift",

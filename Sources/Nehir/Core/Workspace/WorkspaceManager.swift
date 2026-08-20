@@ -168,6 +168,10 @@ final class WorkspaceManager {
             }
 
             var focusedToken: WindowToken?
+            /// Workspace the confirmed focus was last established in. Distinguishes a
+            /// same-window re-focus *in place* from the same window being re-focused
+            /// after moving to a different workspace, which must still reveal.
+            var focusedWorkspaceId: WorkspaceDescriptor.ID?
             var pendingManagedFocus = PendingManagedFocusRequest()
             var lastTiledFocusedByWorkspace: [WorkspaceDescriptor.ID: WindowToken] = [:]
             var lastFloatingFocusedByWorkspace: [WorkspaceDescriptor.ID: WindowToken] = [:]
@@ -312,6 +316,7 @@ final class WorkspaceManager {
     private func focusSessionSnapshot() -> FocusSessionSnapshot {
         FocusSessionSnapshot(
             focusedToken: sessionState.focus.focusedToken,
+            focusedWorkspaceId: sessionState.focus.focusedWorkspaceId,
             pendingManagedFocus: PendingManagedFocusSnapshot(
                 token: sessionState.focus.pendingManagedFocus.token,
                 workspaceId: sessionState.focus.pendingManagedFocus.workspaceId,
@@ -725,6 +730,7 @@ final class WorkspaceManager {
         }
 
         sessionState.focus.focusedToken = focusSession.focusedToken
+        sessionState.focus.focusedWorkspaceId = focusSession.focusedWorkspaceId
         sessionState.focus.pendingManagedFocus = .init(
             token: focusSession.pendingManagedFocus.token,
             workspaceId: focusSession.pendingManagedFocus.workspaceId,
@@ -1138,6 +1144,11 @@ final class WorkspaceManager {
         sessionState.focus.focusedToken
     }
 
+    /// Workspace the confirmed managed focus was last established in.
+    var confirmedManagedFocusWorkspaceId: WorkspaceDescriptor.ID? {
+        sessionState.focus.focusedWorkspaceId
+    }
+
     var focusedHandle: WindowHandle? {
         confirmedManagedFocusToken.flatMap { windows.handle(for: $0) }
     }
@@ -1276,6 +1287,10 @@ final class WorkspaceManager {
             var focusChanged = false
             if focus.focusedToken != token {
                 focus.focusedToken = token
+                focusChanged = true
+            }
+            if focus.focusedWorkspaceId != workspaceId {
+                focus.focusedWorkspaceId = workspaceId
                 focusChanged = true
             }
             if !focus.isNonManagedFocusActive {
@@ -1909,6 +1924,7 @@ final class WorkspaceManager {
                self.entry(for: confirmed)?.workspaceId == workspaceId
             {
                 focus.focusedToken = nil
+                focus.focusedWorkspaceId = nil
                 focus.isAppFullscreenActive = false
                 focusChanged = true
             }
@@ -1997,6 +2013,10 @@ final class WorkspaceManager {
 
         if focus.focusedToken != token {
             focus.focusedToken = token
+            changed = true
+        }
+        if focus.focusedWorkspaceId != workspaceId {
+            focus.focusedWorkspaceId = workspaceId
             changed = true
         }
         changed = setRememberedFocus(token, in: workspaceId, mode: mode, focus: &focus) || changed
