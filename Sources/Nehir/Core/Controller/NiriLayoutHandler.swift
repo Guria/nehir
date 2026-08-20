@@ -822,7 +822,22 @@ enum NiriWindowMoveResult {
         }
 
         let offsetBefore = state.viewOffsetPixels.current()
+        let targetOffsetBefore = state.viewOffsetPixels.target()
         var viewportNeedsRecalc = removal.removalResult.viewportNeedsRecalc
+
+        // A reveal moves the viewport in one of two ways depending on the motion
+        // snapshot. With animations disabled `animateToOffset` writes a static
+        // offset, so the *current* offset changes immediately. With animations
+        // enabled it installs a spring: the *target* moves and the current offset
+        // stays put for the display-link driver to interpolate. Watching only the
+        // current offset therefore misses an animated reveal entirely, and the
+        // `.startNiriScroll` directive gated on this flag is never emitted — so
+        // nothing ever drives the spring and the viewport never reaches the
+        // revealed column.
+        func viewportMoved() -> Bool {
+            abs(state.viewOffsetPixels.current() - offsetBefore) > 1
+                || abs(state.viewOffsetPixels.target() - targetOffsetBefore) > 1
+        }
 
         for col in pass.engine.columns(in: pass.wsId) {
             if col.cachedWidth <= 0 {
@@ -869,7 +884,7 @@ enum NiriWindowMoveResult {
                 fromContainerIndex: removal.removalResult.fromIndexForVisibility,
                 revealTrigger: .automatic
             )
-            if abs(state.viewOffsetPixels.current() - offsetBefore) > 1 {
+            if viewportMoved() {
                 viewportNeedsRecalc = true
             }
         }
@@ -914,7 +929,7 @@ enum NiriWindowMoveResult {
                         reason: "resolveSelection.centeredViewportCorrection"
                     )
                     state.preservesUnsnappedGestureOffset = false
-                    if abs(state.viewOffsetPixels.current() - offsetBefore) > 1 {
+                    if viewportMoved() {
                         viewportNeedsRecalc = true
                     }
                 }

@@ -122,26 +122,42 @@ import Testing
         #expect(abs(fixture.state.viewOffsetPixels.current() - currentBefore) <= 1)
     }
 
-    /// The plan-build step in `NiriLayoutHandler` decides whether to emit a
-    /// `.startNiriScroll` directive by testing
-    /// `abs(viewOffsetPixels.current() - offsetBefore) > 1`. Under the production
-    /// motion value the reveal moves only the target, so that comparison does not
-    /// observe the scheduled scroll — while `isAnimating` and the target delta do.
-    ///
-    /// This records the asymmetry between the three signals rather than asserting a
-    /// desired directive outcome.
-    @Test func currentOffsetDeltaDoesNotObserveAnAnimatedScroll() {
+    /// The plan-build step in `NiriLayoutHandler` decides whether the viewport moved
+    /// — and so whether to emit a `.startNiriScroll` directive that drives the
+    /// animation — by comparing offsets against their pre-reveal values. An animated
+    /// reveal moves only the target, so a current-offset comparison alone does not
+    /// observe it. Both deltas must be considered, or nothing drives the spring and
+    /// the viewport never reaches the revealed column.
+    @Test func animatedRevealIsObservableFromTheOffsetDeltas() {
         var fixture = rebasedFixture()
-        let offsetBefore = fixture.state.viewOffsetPixels.current()
+        let currentBefore = fixture.state.viewOffsetPixels.current()
+        let targetBefore = fixture.state.viewOffsetPixels.target()
 
         _ = fixture.reveal(movedColumn, trigger: .automatic, motion: .enabled)
 
-        let currentDelta = abs(fixture.state.viewOffsetPixels.current() - offsetBefore)
-        let targetDelta = abs(fixture.state.viewOffsetPixels.target() - offsetBefore)
+        let currentDelta = abs(fixture.state.viewOffsetPixels.current() - currentBefore)
+        let targetDelta = abs(fixture.state.viewOffsetPixels.target() - targetBefore)
 
+        // The current offset alone is not enough: it has not moved yet.
         #expect(currentDelta <= 1)
+        // The target delta is what makes the scheduled scroll observable.
         #expect(targetDelta > 1)
-        #expect(fixture.state.viewOffsetPixels.isAnimating)
+        #expect(max(currentDelta, targetDelta) > 1)
+    }
+
+    /// The same combined check must also observe a static reveal, so the gate keeps
+    /// working when animations are disabled.
+    @Test func staticRevealIsObservableFromTheOffsetDeltas() {
+        var fixture = rebasedFixture()
+        let currentBefore = fixture.state.viewOffsetPixels.current()
+        let targetBefore = fixture.state.viewOffsetPixels.target()
+
+        _ = fixture.reveal(movedColumn, trigger: .automatic, motion: .disabled)
+
+        let currentDelta = abs(fixture.state.viewOffsetPixels.current() - currentBefore)
+        let targetDelta = abs(fixture.state.viewOffsetPixels.target() - targetBefore)
+
+        #expect(max(currentDelta, targetDelta) > 1)
     }
 
     // MARK: - Fixture
