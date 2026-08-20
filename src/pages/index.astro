@@ -264,6 +264,24 @@ const faqs = [
       <div class="quotes">
         <figure class="quote">
           <span class="pull-mark" aria-hidden="true">～</span>
+          <blockquote class="quote-body" cite="https://github.com/apphane-dev/nehir/issues/201#issuecomment-5350546819">
+            <p>
+              Currently, Nehir is the smoothest tiled desktop I've seen on a
+              Mac.
+            </p>
+          </blockquote>
+          <figcaption class="quote-cite">
+            <span class="quote-by">
+              — <a href="https://github.com/cunninghamcard-bit" rel="noopener">@cunninghamcard-bit</a>
+              <span class="quote-xlate">translated from Chinese</span>
+            </span>
+            <a class="quote-src mono" href="https://github.com/apphane-dev/nehir/issues/201#issuecomment-5350546819" rel="noopener">
+              GitHub Issue #201 ↗
+            </a>
+          </figcaption>
+        </figure>
+        <figure class="quote">
+          <span class="pull-mark" aria-hidden="true">～</span>
           <blockquote class="quote-body" cite="https://github.com/apphane-dev/nehir/discussions/166#discussioncomment-18079032">
             <p>
               I have been using various tiling managers but have come back to
@@ -519,8 +537,8 @@ const faqs = [
   .lineage a:hover { color: var(--cyan); }
 
   /* testimonials */
-  .community { max-width: 1100px; }
-  .quotes { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(2.2rem, 5vw, 4rem);
+  .community { max-width: 1240px; }
+  .quotes { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(2.2rem, 4vw, 3.2rem);
     align-items: start; margin-top: 1.8rem; }
   .quote { margin: 0; position: relative; padding-left: 1.6rem;
     border-left: 2px solid transparent; border-image: var(--flow) 1; }
@@ -533,7 +551,8 @@ const faqs = [
   .quote-by a { color: var(--muted); border-bottom: 1px solid var(--line-strong); }
   .quote-by a:hover { color: var(--cyan); }
   .quote-src { color: var(--cyan); font-size: 0.82rem; }
-  @media (max-width: 820px) { .quotes { grid-template-columns: 1fr; gap: 2.4rem; } }
+  .quote-xlate { color: var(--faint); font-size: 0.78rem; margin-left: 0.35rem; }
+  @media (max-width: 860px) { .quotes { grid-template-columns: 1fr; gap: 2.4rem; } }
 
   /* install */
   .install-grid { align-items: start; }
