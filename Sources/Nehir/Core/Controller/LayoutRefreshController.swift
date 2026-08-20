@@ -4722,6 +4722,32 @@ final class LayoutDiffExecutor {
             }
         }
 
+        // A window transferred in from a *visible* workspace has no visibility
+        // change to hook onto: it was never hidden, so it produces neither a
+        // `.show` nor a `restoreChange` and is therefore absent from
+        // `visibleJobs` above. The windows already resident on this workspace
+        // were parked while it was inactive, so they *do* restore and get
+        // force-ordered above — burying the transferred window even though it
+        // holds focus. Raise the focused window last, through the same
+        // SkyLight ordering the restore pass uses, so it ends up on top of the
+        // windows this pass just raised. The post-layout focus handoff's
+        // AXRaise cannot be relied on for this: it is app-cooperative and runs
+        // after these forced private-API orderings.
+        //
+        // This runs unconditionally for the focused window rather than only for
+        // tokens missing from `visibleJobs`: a focused window that *did* restore
+        // is ordered somewhere in the middle of the loop above and can still be
+        // buried by a sibling raised after it. Re-raising it here is idempotent
+        // and makes "the focused window ends up on top" hold either way.
+        if isPlanWorkspaceActive,
+           let focusedToken = diff.focusedFrame?.token,
+           !blockedRevealTokens.contains(focusedToken),
+           !hiddenTokens.contains(focusedToken),
+           let skyLightWindowId = UInt32(exactly: focusedToken.windowId)
+        {
+            SkyLight.shared.orderWindow(skyLightWindowId, relativeTo: 0, order: .above)
+        }
+
         var frameUpdates: [(pid: pid_t, windowId: Int, frame: CGRect)] = []
         frameUpdates.reserveCapacity(diff.frameChanges.count)
         var resizeMinimumProbeFrameUpdates: [(pid: pid_t, windowId: Int, frame: CGRect)] = []
